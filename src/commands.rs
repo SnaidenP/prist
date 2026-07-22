@@ -303,6 +303,21 @@ fn clean(home: &PristHome) -> Result<()> {
 /// `prist doctor`
 fn doctor(home: &PristHome) -> Result<()> {
     let mut issues = 0usize;
+
+    let git_check = std::process::Command::new("git").arg("--version").output();
+    if let Ok(out) = git_check {
+        if out.status.success() {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            println!("  ✓ Git detected ({ver})");
+        } else {
+            println!("  ✗ Git command returned failure");
+            issues += 1;
+        }
+    } else {
+        println!("  ✗ Git is not installed or not in PATH (install via: winget install Git.Git)");
+        issues += 1;
+    }
+
     let bare = home.git_bare();
     if !git_ops::is_bare_repo(&bare) {
         println!("  ✗ bare repo missing at {}", bare.display());

@@ -42,6 +42,14 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 }
 Write-Step "Detected architecture: $arch"
 
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    Write-Ok "Git detected"
+} else {
+    Write-Warn "Git is not installed or not in PATH."
+    Write-Warn "Prist uses Git to clone and deduplicate Flutter SDKs."
+    Write-Warn "You can install Git via: winget install Git.Git"
+}
+
 # ── 2. Resolve version + download URL ─────────────────────────────────────────
 
 Write-Step "Resolving version ($Version)..."

@@ -133,7 +133,13 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
         .arg(FLUTTER_REPO_URL)
         .arg(bare_path)
         .status()
-        .map_err(|e| PristError::msg(format!("failed to run git: {e}")))?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                PristError::msg("Git is not installed or not found in PATH. Prist requires Git to clone Flutter SDKs.\nPlease install Git using 'winget install Git.Git' and try again.")
+            } else {
+                PristError::msg(format!("failed to run git: {e}"))
+            }
+        })?;
 
     if !status.success() {
         return Err(PristError::msg(format!(
