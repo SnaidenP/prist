@@ -106,14 +106,17 @@ if (Test-Path $destExe) {
 
 Write-Step "Downloading $downloadUrl..."
 $zipPath = Join-Path $env:TEMP "prist-$tag-$arch.zip"
+Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
 try {
     $wc = New-Object System.Net.WebClient
     $wc.Headers.Add("User-Agent", "prist-installer")
     $wc.DownloadFile($downloadUrl, $zipPath)
 } catch {
-    Write-Err "Download failed: $($_.Exception.Message)"
-    exit 1
+    $zipPath = Join-Path $env:TEMP "prist-$tag-$arch-$((Get-Date).Ticks).zip"
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "prist-installer")
+    $wc.DownloadFile($downloadUrl, $zipPath)
 }
 Write-Ok "Downloaded $([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB"
 
