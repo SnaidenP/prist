@@ -58,10 +58,11 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
         _ => Map::new(),
     };
 
-    // dart.flutterSdkPath → the active env's path.
+    // dart.flutterSdkPath → the active env's path (forward slashes for cross-platform IDE compatibility).
+    let env_path_str = env_path.to_string_lossy().replace('\\', "/");
     root.insert(
         "dart.flutterSdkPath".to_string(),
-        Value::String(env_path.to_string_lossy().into_owned()),
+        Value::String(env_path_str),
     );
 
     // Exclude Prist's home from file watcher + search to avoid reindexing.
@@ -116,7 +117,8 @@ fn intellij(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
             .filter(|l| !l.starts_with("flutter.sdk="))
             .map(String::from)
             .collect();
-        lines.push(format!("flutter.sdk={}", env_path.to_string_lossy()));
+        let env_path_str = env_path.to_string_lossy().replace('\\', "/");
+        lines.push(format!("flutter.sdk={env_path_str}"));
         fs_util::atomic_write_str(&props, &format!("{}\n", lines.join("\n")))?;
     }
 
@@ -203,7 +205,7 @@ fn home_for_exclusion(env_path: &Path) -> String {
     // env_path = <home>/envs/<name>; pop twice to reach <home>.
     p.pop();
     p.pop();
-    let s = p.to_string_lossy().into_owned();
+    let s = p.to_string_lossy().replace('\\', "/");
     // Glob: "**/<home>/**"
     format!("**/{s}/**")
 }
