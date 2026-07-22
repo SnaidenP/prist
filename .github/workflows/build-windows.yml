@@ -1,0 +1,83 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            asset_name: prist.exe-x86_64-pc-windows-msvc.zip
+          - target: aarch64-pc-windows-msvc
+            asset_name: prist.exe-aarch64-pc-windows-msvc.zip
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install MSVC toolchain (aarch64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          # The windows-2022 runner has the ARM64 build tools under VS 2022.
+          # Ensure they're on PATH for the linker.
+          $vsPath = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+          if (Test-Path $vcvars) {
+            Write-Host "ARM64 build tools present at $vcvars"
+          } else {
+            Write-Host "::warning::ARM64 build tools not found; aarch64 build may fail"
+          }
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_BUILD_JOBS: "1"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $staging = "staging"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          $exe = "target/${{ matrix.target }}/release/prist.exe"
+          Copy-Item $exe $staging/
+          # Include the installer scripts for convenience.
+          Copy-Item scripts/install.ps1 $staging/
+          Copy-Item scripts/uninstall.ps1 $staging/
+          Compress-Archive -Path "$staging/*" -DestinationPath ${{ matrix.asset_name }} -Force
+
+      - name: Generate SHA-256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash ${{ matrix.asset_name }} -Algorithm SHA256).Hash
+          "$hash  ${{ matrix.asset_name }}" | Out-File -Encoding ascii "${{ matrix.asset_name }}.sha256"
+
+      - name: Upload artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset_name }}
+            ${{ matrix.asset_name }}.sha256
+          generate_release_notes: true
