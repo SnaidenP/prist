@@ -142,21 +142,19 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
     // System git handles proxies, TLS, retries, and large repos more robustly
     // than gix's built-in HTTP transport.
     println!("  Falling back to system git for clone...");
-    let output = std::process::Command::new("git")
+    let status = std::process::Command::new("git")
         .arg("clone")
         .arg("--bare")
         .arg("--progress")
         .arg(FLUTTER_REPO_URL)
         .arg(bare_path)
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .output()
+        .status()
         .map_err(|e| PristError::msg(format!("failed to run git: {e}")))?;
 
-    if !output.status.success() {
+    if !status.success() {
         return Err(PristError::msg(format!(
             "git clone --bare failed (exit {:?})",
-            output.status.code()
+            status.code()
         )));
     }
 
@@ -203,22 +201,18 @@ pub fn create_env_from_bare(
             let _ = std::fs::remove_dir_all(env_path);
 
             // Fallback: system git clone + checkout.
-            let mut cmd = std::process::Command::new("git");
-            cmd.arg("clone")
+            let status = std::process::Command::new("git")
+                .arg("clone")
                 .arg("--local")
                 .arg(bare_path)
                 .arg(env_path)
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit());
-
-            let output = cmd
-                .output()
+                .status()
                 .map_err(|e| PristError::msg(format!("failed to run git clone: {e}")))?;
 
-            if !output.status.success() {
+            if !status.success() {
                 return Err(PristError::msg(format!(
                     "git clone --local failed (exit {:?})",
-                    output.status.code()
+                    status.code()
                 )));
             }
 
@@ -230,16 +224,14 @@ pub fn create_env_from_bare(
                     .arg("checkout")
                     .arg("--detach")
                     .arg(c)
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .output()
+                    .status()
                     .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
 
-                if !checkout.status.success() {
+                if !checkout.success() {
                     return Err(PristError::msg(format!(
                         "git checkout {} failed (exit {:?})",
                         c,
-                        checkout.status.code()
+                        checkout.code()
                     )));
                 }
             }
