@@ -183,9 +183,10 @@ pub fn create_env_from_bare(
     if let Some(parent) = env_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let url = bare_path.to_string_lossy().into_owned();
     tracing::info!(src = %bare_path.display(), dest = %env_path.display(), "local clone for env");
 
+    // Try gix first, then fall back to system git.
+    let url = bare_path.to_string_lossy().into_owned();
     let prep = PrepareFetch::new(
         url.as_str(),
         env_path,
@@ -194,7 +195,57 @@ pub fn create_env_from_bare(
         OpenOptions::default(),
     )
     .map_err(|e| PristError::msg(format!("preparing env clone: {e}")))?;
-    fetch_and_checkout(prep, commit)?;
+
+    match fetch_and_checkout(prep, commit) {
+        Ok(()) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "gix local clone failed; falling back to system git");
+            let _ = std::fs::remove_dir_all(env_path);
+
+            // Fallback: system git clone + checkout.
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("clone")
+                .arg("--local")
+                .arg(bare_path)
+                .arg(env_path)
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit());
+
+            let output = cmd
+                .output()
+                .map_err(|e| PristError::msg(format!("failed to run git clone: {e}")))?;
+
+            if !output.status.success() {
+                return Err(PristError::msg(format!(
+                    "git clone --local failed (exit {:?})",
+                    output.status.code()
+                )));
+            }
+
+            // Detach HEAD to the target commit.
+            if let Some(c) = commit {
+                let checkout = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(env_path)
+                    .arg("checkout")
+                    .arg("--detach")
+                    .arg(c)
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .output()
+                    .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
+
+                if !checkout.status.success() {
+                    return Err(PristError::msg(format!(
+                        "git checkout {} failed (exit {:?})",
+                        c,
+                        checkout.status.code()
+                    )));
+                }
+            }
+        }
+    }
+
     write_alternates(env_path, &bare_path.join("objects"))?;
     Ok(env_path.to_path_buf())
 }
