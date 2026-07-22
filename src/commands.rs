@@ -63,7 +63,6 @@ fn http_client() -> reqwest::Client {
 
 /// `prist create <name> [reference]`
 async fn create(home: &PristHome, name: String, reference: Option<String>) -> Result<()> {
-    let reference = reference.as_deref().unwrap_or("stable");
     validate_env_name(&name)?;
     let env_path = home.env(&name);
     if env_path.exists() {
@@ -71,7 +70,23 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
     }
 
     let client = http_client();
-    let release = resolve_release(&client, reference).await?;
+
+    // Determine target reference:
+    // 1. If explicit `reference` passed (e.g. `prist create myenv 3.24.3`), use it.
+    // 2. If no `reference` passed, check if `name` itself resolves to a valid version / channel / commit.
+    // 3. Otherwise fall back to "stable".
+    let target_ref = match &reference {
+        Some(r) => r.clone(),
+        None => {
+            if resolve_release(&client, &name).await.is_ok() {
+                name.clone()
+            } else {
+                "stable".to_string()
+            }
+        }
+    };
+
+    let release = resolve_release(&client, &target_ref).await?;
     let commit = release.commit_hash().map(|s| s.to_string());
 
     let version_label = release
@@ -107,11 +122,13 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
         }
     }
 
+    let resolved_version = git_ops::read_flutter_version(&env_path).or(release.version.clone());
+
     let meta = EnvMeta {
         name: name.clone(),
-        reference: Some(reference.to_string()),
+        reference: Some(target_ref),
         channel: release.channel.clone(),
-        version: release.version.clone(),
+        version: resolved_version,
         commit: commit.clone(),
         engine_hash: engine_hash.clone(),
         created_at: Some(now_iso()),
@@ -535,6 +552,7 @@ fn validate_env_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn describe_release(release: &Release, commit: Option<&str>) -> String {
     if let Some(v) = &release.version {
         return v.clone();

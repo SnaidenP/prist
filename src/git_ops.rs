@@ -91,11 +91,6 @@ pub fn clone_remote(url: &str, dst: &Path, commit: Option<&str>) -> Result<PathB
     Ok(dst.to_path_buf())
 }
 
-/// Ensure the central bare repo exists and contains `commit`. Clones from the
-/// upstream if missing; re-clones if the bare exists but is missing `commit`.
-///
-/// TODO: replace the re-clone with an incremental fetch via gix's connection
-/// API so warm-cache installs stay close to O(1).
 pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
     if let Some(parent) = bare_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -107,9 +102,20 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
         let repo =
             gix::open(bare_path).map_err(|e| PristError::msg(format!("opening bare repo: {e}")))?;
         if !has_object(&repo, c) {
-            tracing::info!(commit = c, "commit missing from bare; re-cloning");
-            std::fs::remove_dir_all(bare_path)?;
-            clone_bare(bare_path)?;
+            tracing::info!(commit = c, "commit missing from bare; fetching tags");
+            let _ = std::process::Command::new("git")
+                .args(["fetch", "--tags"])
+                .current_dir(bare_path)
+                .output();
+            let _ = std::process::Command::new("git")
+                .args(["fetch", "origin", c])
+                .current_dir(bare_path)
+                .output();
+            if !has_object(&repo, c) {
+                tracing::info!(commit = c, "re-cloning bare repo");
+                std::fs::remove_dir_all(bare_path)?;
+                clone_bare(bare_path)?;
+            }
         }
     }
     set_gc_auto_zero(bare_path)?;
@@ -118,7 +124,6 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
 
 fn clone_bare(bare_path: &Path) -> Result<()> {
     tracing::info!(url = FLUTTER_REPO_URL, dest = %bare_path.display(), "bare cloning flutter");
-
     // Use system git directly — gix's HTTP transport has reliability issues on
     // some Windows setups (IO errors, connection drops on large repos).
     println!("  → fetching Flutter repo (this may take a minute)...");
@@ -137,7 +142,6 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
             status.code()
         )));
     }
-
     Ok(())
 }
 
