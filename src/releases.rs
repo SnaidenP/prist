@@ -245,6 +245,17 @@ impl ReleaseFeed {
         if let Some(rel) = self.find_by_version(reference) {
             return Ok(rel.clone());
         }
-        Err(PristError::UnresolvedRef(reference.into()))
+        let with_v = if reference.starts_with('v') { reference.to_string() } else { format!("v{reference}") };
+        let without_v = reference.trim_start_matches('v');
+        if let Some(rel) = self.find_by_version(&with_v).or_else(|| self.find_by_version(without_v)) {
+            return Ok(rel.clone());
+        }
+
+        // If not in the JSON feed, treat reference as a valid Git tag / version ref directly
+        Ok(Release {
+            version: Some(reference.to_string()),
+            hash: Some(reference.to_string()),
+            ..Default::default()
+        })
     }
 }

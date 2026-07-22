@@ -98,24 +98,23 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
 
     if !is_bare_repo(bare_path) {
         clone_bare(bare_path)?;
-    } else if let Some(c) = commit {
-        let repo =
-            gix::open(bare_path).map_err(|e| PristError::msg(format!("opening bare repo: {e}")))?;
-        if !has_object(&repo, c) {
-            tracing::info!(commit = c, "commit missing from bare; fetching tags");
+    }
+    
+    if let Some(c) = commit {
+        let repo = gix::open(bare_path).ok();
+        let has_obj = repo.as_ref().map(|r| has_object(r, c)).unwrap_or(false);
+        if !has_obj {
+            tracing::info!(commit = c, "fetching ref/tag in bare repo");
             let _ = std::process::Command::new("git")
-                .args(["fetch", "--tags"])
-                .current_dir(bare_path)
+                .arg("-C")
+                .arg(bare_path)
+                .args(["fetch", "origin", "+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*"])
                 .output();
             let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(bare_path)
                 .args(["fetch", "origin", c])
-                .current_dir(bare_path)
                 .output();
-            if !has_object(&repo, c) {
-                tracing::info!(commit = c, "re-cloning bare repo");
-                std::fs::remove_dir_all(bare_path)?;
-                clone_bare(bare_path)?;
-            }
         }
     }
     set_gc_auto_zero(bare_path)?;
@@ -142,6 +141,14 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
             status.code()
         )));
     }
+
+    // Fetch all tags
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(bare_path)
+        .args(["fetch", "origin", "+refs/tags/*:refs/tags/*"])
+        .output();
+
     Ok(())
 }
 
@@ -185,16 +192,28 @@ pub fn create_env_from_bare(
         )));
     }
 
-    // Detach HEAD to the target commit.
+    // Detach HEAD to the target commit / tag.
     if let Some(c) = commit {
-        let checkout = std::process::Command::new("git")
+        let mut checkout = std::process::Command::new("git")
             .arg("-C")
             .arg(env_path)
             .arg("checkout")
-            .arg("--detach")
+            .arg("-f")
             .arg(c)
             .status()
             .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
+
+        if !checkout.success() {
+            let v_tag = format!("v{c}");
+            checkout = std::process::Command::new("git")
+                .arg("-C")
+                .arg(env_path)
+                .arg("checkout")
+                .arg("-f")
+                .arg(&v_tag)
+                .status()
+                .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
+        }
 
         if !checkout.success() {
             return Err(PristError::msg(format!(
