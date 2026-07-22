@@ -601,8 +601,8 @@ fn fs_unlink(path: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
     use winreg::enums::*;
+    use winreg::reg_value::RegValue;
     use winreg::RegKey;
-
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let env = hkcu
         .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
@@ -630,10 +630,69 @@ fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
     } else {
         format!("{prefix};{current}")
     };
-    env.set_value("Path", &new_path)
+
+    // Write as REG_EXPAND_SZ (not REG_SZ) so Windows expands env vars in the
+    // path, and so the value type matches what the system expects for Path.
+    let mut bytes: Vec<u8> = Vec::new();
+    for c in new_path.encode_utf16() {
+        bytes.push((c & 0xFF) as u8);
+        bytes.push((c >> 8) as u8);
+    }
+    bytes.push(0);
+    bytes.push(0); // null terminator
+    let reg_val = RegValue {
+        vtype: RegType::REG_EXPAND_SZ,
+        bytes,
+    };
+    env.set_raw_value("Path", &reg_val)
         .map_err(|e| PristError::msg(format!("write PATH: {e}")))?;
 
+    // Broadcast WM_SETTINGCHANGE so explorer.exe (and new CMD/PowerShell
+    // windows launched from it) picks up the PATH change immediately without
+    // needing to log off / restart.
+    broadcast_setting_change();
+
     Ok(())
+}
+
+#[cfg(windows)]
+fn broadcast_setting_change() {
+    // Send WM_SETTINGCHANGE via SendMessageTimeoutW(HWND_BROADCAST, ...).
+    // This is the standard way to notify all top-level windows that the
+    // environment has changed. New processes spawned by explorer.exe will
+    // read the updated registry PATH.
+    #[repr(C)]
+    struct Foo;
+
+    extern "system" {
+        fn SendMessageTimeoutW(
+            hwnd: isize,
+            msg: u32,
+            wparam: usize,
+            lparam: *const u16,
+            flags: u32,
+            timeout: u32,
+            result: *mut usize,
+        ) -> isize;
+    }
+
+    const HWND_BROADCAST: isize = 0xFFFF;
+    const WM_SETTINGCHANGE: u32 = 0x001A;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+    let env_str: Vec<u16> = "Environment\0".encode_utf16().collect();
+
+    unsafe {
+        let mut result: usize = 0;
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            env_str.as_ptr(),
+            SMTO_ABORTIFHUNG,
+            5000,
+            &mut result,
+        );
+    }
 }
 
 #[cfg(unix)]
