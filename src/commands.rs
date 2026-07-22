@@ -378,7 +378,7 @@ fn repair(home: &PristHome) -> Result<()> {
 fn update() -> Result<()> {
     let bin = std::env::current_exe().map_err(|e| PristError::msg(format!("current exe: {e}")))?;
     let status = self_update::backends::github::Update::configure()
-        .repo_owner("fredd85565")
+        .repo_owner("SnaidenP")
         .repo_name("prist")
         .bin_name("prist")
         .show_download_progress(true)
