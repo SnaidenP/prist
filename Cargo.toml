@@ -1,6 +1,6 @@
 [package]
 name = "prist"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Fredery Peña <fredd85565@gmail.com>"]
@@ -57,7 +57,6 @@ self_update = { version = "0.42", features = ["archive-tar", "compression-flate2
 # Platform links
 [target.'cfg(windows)'.dependencies]
 junction = "1"
-winreg = "0.55"
 
 [target.'cfg(unix)'.dependencies]
 

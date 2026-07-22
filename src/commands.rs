@@ -139,17 +139,13 @@ fn use_env(home: &PristHome, env: String, global: bool) -> Result<()> {
         let _ = fs_unlink(&home.default_env_link());
         crate::fs_util::make_dir_link(&home.default_env_link(), &env_path)?;
 
-        // Ensure the default env's bin/ is on the persistent user PATH so
-        // `flutter` and `dart` work directly from any terminal.
-        let bin_dir = home.default_env_link().join(BIN_DIR);
-        let dart_sdk_bin = bin_dir.join("cache").join("dart-sdk").join(BIN_DIR);
-        if let Err(e) = ensure_on_path(&[&bin_dir, &dart_sdk_bin]) {
-            tracing::warn!(error = %e, "could not update user PATH");
-            println!("  ~ could not update PATH automatically (add {} to PATH manually)", bin_dir.display());
-        }
+        // Create/update shim scripts in the prist bin directory (already on
+        // PATH from the installer) so `flutter`, `dart`, and `pub` work
+        // directly from any terminal without modifying the system PATH.
+        install_shims(home);
 
         println!("→ set '{env}' as the global default");
-        println!("  open a new terminal for `flutter` and `dart` to be available");
+        println!("  `flutter` and `dart` are now available in any terminal");
     } else {
         let rc = Path::new(crate::paths::PROJECT_CONFIG_NAME);
         let cfg = ProjectConfig {
@@ -595,135 +591,45 @@ fn fs_unlink(path: &Path) -> std::io::Result<()> {
     // A junction is removed with rmdir, not unlink.
     std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path))
 }
+/// Create/update shim scripts in the prist bin directory so `flutter`,
+/// `dart`, and `pub` are available directly from any terminal.
+///
+/// The prist bin dir (e.g. `%LOCALAPPDATA%\prist\bin`) is already on the
+/// user's PATH from the installer. We write `.bat` shims there that forward
+/// to the active env's binaries via `prist flutter`, `prist dart`, etc.
+fn install_shims(home: &PristHome) {
+    let bin_dir = home.root().join(BIN_DIR);
+    let _ = std::fs::create_dir_all(&bin_dir);
 
-/// Ensure `dirs` are on the persistent user PATH (Windows registry / Unix rc file).
-/// Idempotent — only adds entries that are missing.
-#[cfg(windows)]
-fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
-    use winreg::enums::*;
-    use winreg::reg_value::RegValue;
-    use winreg::RegKey;
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-        .map_err(|e| PristError::msg(format!("open HKCU\\Environment: {e}")))?;
-
-    let current: String = env.get_value("Path").unwrap_or_default();
-    let entries: Vec<&str> = current.split(';').filter(|s| !s.is_empty()).collect();
-
-    let mut to_add: Vec<String> = Vec::new();
-    for dir in dirs {
-        let dir_str = dir.to_string_lossy().to_string();
-        let already = entries.iter().any(|e| e.eq_ignore_ascii_case(&dir_str));
-        if !already {
-            to_add.push(dir_str);
+    // Windows .bat shims
+    #[cfg(windows)]
+    {
+        let shims = [
+            ("flutter.bat", "flutter"),
+            ("dart.bat", "dart"),
+            ("pub.bat", "pub"),
+        ];
+        for (file, tool) in shims {
+            let path = bin_dir.join(file);
+            let content = format!(
+                "@echo off\r\nprist {tool} %*\r\n"
+            );
+            let _ = std::fs::write(&path, content);
         }
     }
 
-    if to_add.is_empty() {
-        return Ok(());
-    }
-
-    let prefix = to_add.join(";");
-    let new_path = if current.is_empty() {
-        prefix
-    } else {
-        format!("{prefix};{current}")
-    };
-
-    // Write as REG_EXPAND_SZ (not REG_SZ) so Windows expands env vars in the
-    // path, and so the value type matches what the system expects for Path.
-    let mut bytes: Vec<u8> = Vec::new();
-    for c in new_path.encode_utf16() {
-        bytes.push((c & 0xFF) as u8);
-        bytes.push((c >> 8) as u8);
-    }
-    bytes.push(0);
-    bytes.push(0); // null terminator
-    let reg_val = RegValue {
-        vtype: RegType::REG_EXPAND_SZ,
-        bytes,
-    };
-    env.set_raw_value("Path", &reg_val)
-        .map_err(|e| PristError::msg(format!("write PATH: {e}")))?;
-
-    // Broadcast WM_SETTINGCHANGE so explorer.exe (and new CMD/PowerShell
-    // windows launched from it) picks up the PATH change immediately without
-    // needing to log off / restart.
-    broadcast_setting_change();
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn broadcast_setting_change() {
-    // Send WM_SETTINGCHANGE via SendMessageTimeoutW(HWND_BROADCAST, ...).
-    // This is the standard way to notify all top-level windows that the
-    // environment has changed. New processes spawned by explorer.exe will
-    // read the updated registry PATH.
-    #[repr(C)]
-    struct Foo;
-
-    extern "system" {
-        fn SendMessageTimeoutW(
-            hwnd: isize,
-            msg: u32,
-            wparam: usize,
-            lparam: *const u16,
-            flags: u32,
-            timeout: u32,
-            result: *mut usize,
-        ) -> isize;
-    }
-
-    const HWND_BROADCAST: isize = 0xFFFF;
-    const WM_SETTINGCHANGE: u32 = 0x001A;
-    const SMTO_ABORTIFHUNG: u32 = 0x0002;
-    let env_str: Vec<u16> = "Environment\0".encode_utf16().collect();
-
-    unsafe {
-        let mut result: usize = 0;
-        SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            0,
-            env_str.as_ptr(),
-            SMTO_ABORTIFHUNG,
-            5000,
-            &mut result,
-        );
-    }
-}
-
-#[cfg(unix)]
-fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| PristError::msg("could not determine home directory"))?;
-    let rc = home.join(".bashrc");
-    let marker = "# prist-managed PATH";
-    let existing = std::fs::read_to_string(&rc).unwrap_or_default();
-
-    let dir_strs: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().to_string()).collect();
-    let export_line = format!("export PATH=\"{}:$PATH\"", dir_strs.join(":"));
-
-    if existing.contains(marker) {
-        let mut lines: Vec<String> = existing.lines().map(String::from).collect();
-        for i in 0..lines.len() {
-            if lines[i].starts_with("export PATH=") {
-                lines[i] = export_line.clone();
-            }
+    // Unix shell shims
+    #[cfg(unix)]
+    {
+        let shims = ["flutter", "dart", "pub"];
+        for tool in shims {
+            let path = bin_dir.join(tool);
+            let content = format!("#!/bin/sh\nexec prist {tool} \"$@\"\n");
+            let _ = std::fs::write(&path, content);
+            let _ = std::fs::set_permissions(
+                &path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            );
         }
-        std::fs::write(&rc, lines.join("\n"))?;
-    } else {
-        let mut text = existing;
-        if !text.ends_with('\n') && !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(marker);
-        text.push('\n');
-        text.push_str(&export_line);
-        text.push('\n');
-        std::fs::write(&rc, text)?;
     }
-    Ok(())
 }
