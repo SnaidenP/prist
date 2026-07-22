@@ -1,0 +1,75 @@
+[package]
+name = "prist"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Fredery Peña <fredd85565@gmail.com>"]
+license = "MIT"
+description = "A Flutter version manager written in Rust. Fast, deduplicated, no symlinks on Windows."
+homepage = "https://github.com/fredd85565/prist"
+repository = "https://github.com/fredd85565/prist"
+keywords = ["flutter", "version-manager", "fvm", "puro", "dart"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+
+[[bin]]
+name = "prist"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime & HTTP
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip"] }
+futures-util = "0.3"
+
+# Git (gitoxide): sha1 hashing + basic (index/checkout) + worktree mutation +
+# blocking network client with reqwest transport for HTTPS fetches.
+gix = { version = "0.85", default-features = false, features = ["sha1", "basic", "worktree-mutation", "blocking-network-client", "blocking-http-transport-reqwest"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
+
+# Progress & logging
+indicatif = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+jsonc-parser = { version = "0.23", features = ["serde"] }
+
+# Errors & paths
+anyhow = "1"
+thiserror = "1"
+dirs = "5"
+
+# Hashing & atomic writes
+sha2 = "0.10"
+hex = "0.4"
+tempfile = "3"
+
+# Self update (Phase 4)
+self_update = "0.42"
+
+# Platform links
+[target.'cfg(windows)'.dependencies]
+junction = "1"
+
+[target.'cfg(unix)'.dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[features]
+default = []
