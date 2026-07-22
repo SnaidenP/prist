@@ -201,6 +201,8 @@ pub fn create_env_from_bare(
     // Detach HEAD to the target commit / tag.
     if let Some(c) = commit {
         let mut checkout = std::process::Command::new("git")
+            .arg("-c")
+            .arg("advice.detachedHead=false")
             .arg("-C")
             .arg(env_path)
             .arg("checkout")
@@ -213,6 +215,8 @@ pub fn create_env_from_bare(
         if !checkout.success() {
             let v_tag = format!("v{c}");
             checkout = std::process::Command::new("git")
+                .arg("-c")
+                .arg("advice.detachedHead=false")
                 .arg("-C")
                 .arg(env_path)
                 .arg("checkout")
