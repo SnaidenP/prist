@@ -114,7 +114,12 @@ $shaAsset = $release.assets | Where-Object { $_.name -eq $shaAssetName } | Selec
 if ($shaAsset) {
     Write-Step "Verifying checksum..."
     try {
-        $expectedRaw = (Invoke-WebRequest -Uri $shaAsset.browser_download_url -UseBasicParsing).Content
+        $shaResp = Invoke-WebRequest -Uri $shaAsset.browser_download_url -UseBasicParsing
+        $expectedRaw = $shaResp.Content
+        # GitHub serves .sha256 as application/octet-stream, so .Content may be a byte[].
+        if ($expectedRaw -is [byte[]]) {
+            $expectedRaw = [System.Text.Encoding]::UTF8.GetString($expectedRaw)
+        }
         $expected = ($expectedRaw -split '\s+')[0].Trim().ToLower()
         $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
         if ($actual -ne $expected) {
