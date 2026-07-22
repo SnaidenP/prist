@@ -121,7 +121,7 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
 
     // Use system git directly — gix's HTTP transport has reliability issues on
     // some Windows setups (IO errors, connection drops on large repos).
-    println!("  Cloning Flutter repo (this may take a minute)...");
+    println!("  → fetching Flutter repo (this may take a minute)...");
     let status = std::process::Command::new("git")
         .arg("clone")
         .arg("--bare")
