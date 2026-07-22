@@ -90,7 +90,8 @@ pub fn ensure_engine(home: &PristHome, env_path: &Path, hash: &str) -> Result<()
 /// Run `<env>/bin/flutter --version --suppress-analytics` so the Flutter tool
 /// downloads its engine + Dart SDK into `<env>/bin/cache/`.
 fn populate_via_flutter(env_path: &Path) -> Result<()> {
-    let flutter = env_path.join("bin").join("flutter");
+    let flutter_name = if cfg!(windows) { "flutter.bat" } else { "flutter" };
+    let flutter = env_path.join("bin").join(flutter_name);
     let flutter = flutter
         .to_str()
         .ok_or_else(|| PristError::msg("env path is not valid UTF-8"))?;

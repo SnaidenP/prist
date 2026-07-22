@@ -347,20 +347,19 @@ fn doctor(home: &PristHome) -> Result<()> {
             .unwrap_or(false);
         let flutter_ok = env_path.join(BIN_DIR).join("flutter").exists()
             || env_path.join(BIN_DIR).join("flutter.bat").exists();
-        let engine_ok = git_ops::read_engine_version(&env_path)
+        let engine_cached = git_ops::read_engine_version(&env_path)
             .map(|h| engine::is_cached(home, &h))
-            .unwrap_or(true);
-        if alt_ok && flutter_ok && engine_ok {
-            println!("  ✓ env '{name}' healthy");
+            .unwrap_or(false);
+
+        if alt_ok && flutter_ok {
+            let note = if engine_cached { "engine cached" } else { "engine ready" };
+            println!("  ✓ env '{name}' healthy ({note})");
         } else {
             if !alt_ok {
                 println!("  ✗ env '{name}' has broken alternates");
             }
             if !flutter_ok {
-                println!("  ✗ env '{name}' missing bin/flutter");
-            }
-            if !engine_ok {
-                println!("  ✗ env '{name}' engine not cached");
+                println!("  ✗ env '{name}' missing bin/flutter (run `prist repair`)");
             }
             issues += 1;
         }
@@ -394,15 +393,29 @@ fn repair(home: &PristHome) -> Result<()> {
     for entry in std::fs::read_dir(home.envs())? {
         let entry = entry?;
         let name = entry.file_name();
-        if name.to_string_lossy() == "default" {
+        let name_str = name.to_string_lossy();
+        if name_str == "default" {
             continue;
         }
         let env_path = entry.path();
+
         let alt = git_ops::read_alternates(&env_path);
-        let needs_repair = alt.map(|a| !a.iter().all(|p| p.is_dir())).unwrap_or(true);
-        if needs_repair {
-            println!("→ repairing alternates for '{}'", name.to_string_lossy());
+        let needs_alt_repair = alt.map(|a| !a.iter().all(|p| p.is_dir())).unwrap_or(true);
+        if needs_alt_repair {
+            println!("→ repairing alternates for '{name_str}'");
             git_ops::write_alternates(&env_path, &bare_objects)?;
+        }
+
+        let flutter_bin = env_path.join(BIN_DIR).join("flutter");
+        let flutter_bat = env_path.join(BIN_DIR).join("flutter.bat");
+        if !flutter_bin.exists() && !flutter_bat.exists() {
+            println!("→ repairing working tree for '{name_str}'...");
+            let target_ref = git_ops::read_flutter_version(&env_path).unwrap_or_else(|| "stable".to_string());
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&env_path)
+                .args(["checkout", "-f", &target_ref])
+                .output();
         }
     }
     println!("→ repair complete");
