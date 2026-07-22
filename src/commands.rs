@@ -417,6 +417,13 @@ fn repair(home: &PristHome) -> Result<()> {
                 .args(["checkout", "-f", &target_ref])
                 .output();
         }
+
+        // Fix origin remote URL for flutter doctor compatibility
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env_path)
+            .args(["remote", "set-url", "origin", git_ops::FLUTTER_REPO_URL])
+            .output();
     }
     println!("→ repair complete");
     Ok(())
@@ -495,19 +502,21 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
         cmd.arg(a);
     }
     cmd.env("FLUTTER_ROOT", &env_path);
+    cmd.env("FLUTTER_GIT_URL", crate::git_ops::FLUTTER_REPO_URL);
     // Prepend the env's bin/ (and dart-sdk bin/) to PATH so proxied tools find dart.
     let path = std::env::var("PATH").unwrap_or_default();
+    let path_sep = if cfg!(windows) { ";" } else { ":" };
     let new_path = format!(
         "{}{}{}{}{}",
         env_path.join(BIN_DIR).display(),
-        std::path::MAIN_SEPARATOR,
+        path_sep,
         env_path
             .join(BIN_DIR)
             .join("cache")
             .join("dart-sdk")
             .join(BIN_DIR)
             .display(),
-        std::path::MAIN_SEPARATOR,
+        path_sep,
         path
     );
     cmd.env("PATH", new_path);

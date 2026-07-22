@@ -237,6 +237,11 @@ pub fn create_env_from_bare(
     }
 
     write_alternates(env_path, &bare_path.join("objects"))?;
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env_path)
+        .args(["remote", "set-url", "origin", FLUTTER_REPO_URL])
+        .output();
     Ok(env_path.to_path_buf())
 }
 
