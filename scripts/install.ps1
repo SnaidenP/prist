@@ -61,11 +61,19 @@ try {
 }
 
 $tag   = $release.tag_name
-$assetName = "$BinName-$arch.zip"
-$asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+
+# Try tar.gz first (self_update format), fall back to zip.
+$assetTgz = "$BinName-$arch.tar.gz"
+$assetZip = "$BinName-$arch.zip"
+$asset = $release.assets | Where-Object { $_.name -eq $assetTgz } | Select-Object -First 1
+$assetName = $assetTgz
+if (-not $asset) {
+    $asset = $release.assets | Where-Object { $_.name -eq $assetZip } | Select-Object -First 1
+    $assetName = $assetZip
+}
 
 if (-not $asset) {
-    Write-Err "No asset named '$assetName' found in release $tag."
+    Write-Err "No asset named '$assetTgz' or '$assetZip' found in release $tag."
     Write-Err "Available assets:"
     $release.assets | ForEach-Object { Write-Host "        - $($_.name)" }
     exit 1
@@ -143,7 +151,13 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 try {
-    Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force -ErrorAction Stop
+    if ($assetName -like "*.tar.gz") {
+        # Extract tar.gz using tar (available on Windows 10+)
+        tar -xzf $zipPath -C $InstallDir 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+    } else {
+        Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force -ErrorAction Stop
+    }
 } catch {
     Write-Err "Extraction failed: $($_.Exception.Message)"
     exit 1
