@@ -118,6 +118,8 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
 
 fn clone_bare(bare_path: &Path) -> Result<()> {
     tracing::info!(url = FLUTTER_REPO_URL, dest = %bare_path.display(), "bare cloning flutter");
+
+    // Try gix first (in-process, no external dependency).
     let mut prep = PrepareFetch::new(
         FLUTTER_REPO_URL,
         bare_path,
@@ -126,8 +128,38 @@ fn clone_bare(bare_path: &Path) -> Result<()> {
         OpenOptions::default(),
     )
     .map_err(|e| PristError::msg(format!("preparing bare clone: {e}")))?;
-    prep.fetch_only(Discard, &flag())
-        .map_err(|e| PristError::msg(format!("bare fetch failed: {e}")))?;
+
+    match prep.fetch_only(Discard, &flag()) {
+        Ok((_repo, _outcome)) => return Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "gix bare fetch failed; falling back to system git");
+            // Clean up any partial state left by gix before retrying with git.
+            let _ = std::fs::remove_dir_all(bare_path);
+        }
+    }
+
+    // Fallback: shell out to system `git clone --bare`.
+    // System git handles proxies, TLS, retries, and large repos more robustly
+    // than gix's built-in HTTP transport.
+    println!("  Falling back to system git for clone...");
+    let output = std::process::Command::new("git")
+        .arg("clone")
+        .arg("--bare")
+        .arg("--progress")
+        .arg(FLUTTER_REPO_URL)
+        .arg(bare_path)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| PristError::msg(format!("failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        return Err(PristError::msg(format!(
+            "git clone --bare failed (exit {:?})",
+            output.status.code()
+        )));
+    }
+
     Ok(())
 }
 
