@@ -119,29 +119,9 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
 fn clone_bare(bare_path: &Path) -> Result<()> {
     tracing::info!(url = FLUTTER_REPO_URL, dest = %bare_path.display(), "bare cloning flutter");
 
-    // Try gix first (in-process, no external dependency).
-    let mut prep = PrepareFetch::new(
-        FLUTTER_REPO_URL,
-        bare_path,
-        gix::create::Kind::Bare,
-        gix::create::Options::default(),
-        OpenOptions::default(),
-    )
-    .map_err(|e| PristError::msg(format!("preparing bare clone: {e}")))?;
-
-    match prep.fetch_only(Discard, &flag()) {
-        Ok((_repo, _outcome)) => return Ok(()),
-        Err(e) => {
-            tracing::warn!(error = %e, "gix bare fetch failed; falling back to system git");
-            // Clean up any partial state left by gix before retrying with git.
-            let _ = std::fs::remove_dir_all(bare_path);
-        }
-    }
-
-    // Fallback: shell out to system `git clone --bare`.
-    // System git handles proxies, TLS, retries, and large repos more robustly
-    // than gix's built-in HTTP transport.
-    println!("  Falling back to system git for clone...");
+    // Use system git directly — gix's HTTP transport has reliability issues on
+    // some Windows setups (IO errors, connection drops on large repos).
+    println!("  Cloning Flutter repo (this may take a minute)...");
     let status = std::process::Command::new("git")
         .arg("clone")
         .arg("--bare")
@@ -183,58 +163,41 @@ pub fn create_env_from_bare(
     }
     tracing::info!(src = %bare_path.display(), dest = %env_path.display(), "local clone for env");
 
-    // Try gix first, then fall back to system git.
-    let url = bare_path.to_string_lossy().into_owned();
-    let prep = PrepareFetch::new(
-        url.as_str(),
-        env_path,
-        gix::create::Kind::WithWorktree,
-        gix::create::Options::default(),
-        OpenOptions::default(),
-    )
-    .map_err(|e| PristError::msg(format!("preparing env clone: {e}")))?;
+    // Use system git directly — gix's local transport has path resolution
+    // issues on some Windows setups (os error 3: path not found).
+    let status = std::process::Command::new("git")
+        .arg("clone")
+        .arg("--local")
+        .arg("--no-hardlinks")
+        .arg(bare_path)
+        .arg(env_path)
+        .status()
+        .map_err(|e| PristError::msg(format!("failed to run git clone: {e}")))?;
 
-    match fetch_and_checkout(prep, commit) {
-        Ok(()) => {}
-        Err(e) => {
-            tracing::warn!(error = %e, "gix local clone failed; falling back to system git");
-            let _ = std::fs::remove_dir_all(env_path);
+    if !status.success() {
+        return Err(PristError::msg(format!(
+            "git clone --local failed (exit {:?})",
+            status.code()
+        )));
+    }
 
-            // Fallback: system git clone + checkout.
-            let status = std::process::Command::new("git")
-                .arg("clone")
-                .arg("--local")
-                .arg(bare_path)
-                .arg(env_path)
-                .status()
-                .map_err(|e| PristError::msg(format!("failed to run git clone: {e}")))?;
+    // Detach HEAD to the target commit.
+    if let Some(c) = commit {
+        let checkout = std::process::Command::new("git")
+            .arg("-C")
+            .arg(env_path)
+            .arg("checkout")
+            .arg("--detach")
+            .arg(c)
+            .status()
+            .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
 
-            if !status.success() {
-                return Err(PristError::msg(format!(
-                    "git clone --local failed (exit {:?})",
-                    status.code()
-                )));
-            }
-
-            // Detach HEAD to the target commit.
-            if let Some(c) = commit {
-                let checkout = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(env_path)
-                    .arg("checkout")
-                    .arg("--detach")
-                    .arg(c)
-                    .status()
-                    .map_err(|e| PristError::msg(format!("failed to run git checkout: {e}")))?;
-
-                if !checkout.success() {
-                    return Err(PristError::msg(format!(
-                        "git checkout {} failed (exit {:?})",
-                        c,
-                        checkout.code()
-                    )));
-                }
-            }
+        if !checkout.success() {
+            return Err(PristError::msg(format!(
+                "git checkout {} failed (exit {:?})",
+                c,
+                checkout.code()
+            )));
         }
     }
 
