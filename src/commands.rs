@@ -138,7 +138,18 @@ fn use_env(home: &PristHome, env: String, global: bool) -> Result<()> {
         // Update the `envs/default` junction/symlink to this env.
         let _ = fs_unlink(&home.default_env_link());
         crate::fs_util::make_dir_link(&home.default_env_link(), &env_path)?;
+
+        // Ensure the default env's bin/ is on the persistent user PATH so
+        // `flutter` and `dart` work directly from any terminal.
+        let bin_dir = home.default_env_link().join(BIN_DIR);
+        let dart_sdk_bin = bin_dir.join("cache").join("dart-sdk").join(BIN_DIR);
+        if let Err(e) = ensure_on_path(&[&bin_dir, &dart_sdk_bin]) {
+            tracing::warn!(error = %e, "could not update user PATH");
+            println!("  ~ could not update PATH automatically (add {} to PATH manually)", bin_dir.display());
+        }
+
         println!("→ set '{env}' as the global default");
+        println!("  open a new terminal for `flutter` and `dart` to be available");
     } else {
         let rc = Path::new(crate::paths::PROJECT_CONFIG_NAME);
         let cfg = ProjectConfig {
@@ -583,4 +594,77 @@ fn fs_unlink(path: &Path) -> std::io::Result<()> {
 fn fs_unlink(path: &Path) -> std::io::Result<()> {
     // A junction is removed with rmdir, not unlink.
     std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path))
+}
+
+/// Ensure `dirs` are on the persistent user PATH (Windows registry / Unix rc file).
+/// Idempotent — only adds entries that are missing.
+#[cfg(windows)]
+fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|e| PristError::msg(format!("open HKCU\\Environment: {e}")))?;
+
+    let current: String = env.get_value("Path").unwrap_or_default();
+    let entries: Vec<&str> = current.split(';').filter(|s| !s.is_empty()).collect();
+
+    let mut to_add: Vec<String> = Vec::new();
+    for dir in dirs {
+        let dir_str = dir.to_string_lossy().to_string();
+        let already = entries.iter().any(|e| e.eq_ignore_ascii_case(&dir_str));
+        if !already {
+            to_add.push(dir_str);
+        }
+    }
+
+    if to_add.is_empty() {
+        return Ok(());
+    }
+
+    let prefix = to_add.join(";");
+    let new_path = if current.is_empty() {
+        prefix
+    } else {
+        format!("{prefix};{current}")
+    };
+    env.set_value("Path", &new_path)
+        .map_err(|e| PristError::msg(format!("write PATH: {e}")))?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_on_path(dirs: &[&Path]) -> Result<()> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| PristError::msg("could not determine home directory"))?;
+    let rc = home.join(".bashrc");
+    let marker = "# prist-managed PATH";
+    let existing = std::fs::read_to_string(&rc).unwrap_or_default();
+
+    let dir_strs: Vec<String> = dirs.iter().map(|d| d.to_string_lossy().to_string()).collect();
+    let export_line = format!("export PATH=\"{}:$PATH\"", dir_strs.join(":"));
+
+    if existing.contains(marker) {
+        let mut lines: Vec<String> = existing.lines().map(String::from).collect();
+        for i in 0..lines.len() {
+            if lines[i].starts_with("export PATH=") {
+                lines[i] = export_line.clone();
+            }
+        }
+        std::fs::write(&rc, lines.join("\n"))?;
+    } else {
+        let mut text = existing;
+        if !text.ends_with('\n') && !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(marker);
+        text.push('\n');
+        text.push_str(&export_line);
+        text.push('\n');
+        std::fs::write(&rc, text)?;
+    }
+    Ok(())
 }
