@@ -19,6 +19,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 $RepoOwner = "SnaidenP"
 $RepoName  = "prist"
 $BinName   = "prist.exe"
