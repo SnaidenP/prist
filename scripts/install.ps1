@@ -108,8 +108,9 @@ Write-Step "Downloading $downloadUrl..."
 $zipPath = Join-Path $env:TEMP "prist-$tag-$arch.zip"
 
 try {
-    # Follow redirects (browser_download_url redirects to S3).
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -ErrorAction Stop
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "prist-installer")
+    $wc.DownloadFile($downloadUrl, $zipPath)
 } catch {
     Write-Err "Download failed: $($_.Exception.Message)"
     exit 1
