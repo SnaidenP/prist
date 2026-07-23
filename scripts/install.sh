@@ -48,7 +48,7 @@ mkdir -p "$PRIST_HOME/shared"
 # 4. Resolve latest release tag
 LATEST_TAG=$(curl -sL "https://api.github.com/repos/$PRIST_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-    LATEST_TAG="v0.2.8"
+    LATEST_TAG="v0.3.0"
 fi
 
 TARBALL_NAME="prist-${TARGET}.tar.gz"
