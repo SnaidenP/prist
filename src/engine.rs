@@ -87,25 +87,35 @@ pub fn ensure_engine(home: &PristHome, env_path: &Path, hash: &str) -> Result<()
     Ok(())
 }
 
-/// Run `<env>/bin/flutter --version --suppress-analytics` so the Flutter tool
-/// downloads its engine + Dart SDK into `<env>/bin/cache/`.
+/// Run `<env>/bin/flutter --version` and `<env>/bin/flutter precache` so the Flutter tool
+/// downloads its full engine, Dart SDK, and platform artifacts into `<env>/bin/cache/`.
 fn populate_via_flutter(env_path: &Path) -> Result<()> {
     let flutter_name = if cfg!(windows) { "flutter.bat" } else { "flutter" };
     let flutter = env_path.join("bin").join(flutter_name);
-    let flutter = flutter
+    let flutter_str = flutter
         .to_str()
         .ok_or_else(|| PristError::msg("env path is not valid UTF-8"))?;
-    let status = std::process::Command::new(flutter)
+
+    // 1. Bootstrap Dart SDK & basic engine version stamp
+    let status_ver = std::process::Command::new(flutter_str)
         .arg("--version")
         .arg("--suppress-analytics")
         .current_dir(env_path)
         .status()
-        .map_err(|e| PristError::msg(format!("failed to run flutter: {e}")))?;
-    if !status.success() {
+        .map_err(|e| PristError::msg(format!("failed to run flutter --version: {e}")))?;
+    if !status_ver.success() {
         return Err(anyhow::anyhow!(format!(
-            "flutter --version exited with {status}"
+            "flutter --version exited with {status_ver}"
         )));
     }
+
+    // 2. Precache full Flutter engine binaries, material fonts, sky_engine & platform artifacts
+    let _ = std::process::Command::new(flutter_str)
+        .arg("precache")
+        .arg("--suppress-analytics")
+        .current_dir(env_path)
+        .status();
+
     Ok(())
 }
 
