@@ -512,32 +512,39 @@ fn repair(home: &PristHome) -> Result<()> {
 /// `prist update` (Phase 4): self-update from GitHub releases.
 fn update() -> Result<()> {
     let start = std::time::Instant::now();
-    let bin = std::env::current_exe().map_err(|e| PristError::msg(format!("current exe: {e}")))?;
+    let current = env!("CARGO_PKG_VERSION");
+
     let updater = self_update::backends::github::Update::configure()
         .repo_owner("SnaidenP")
         .repo_name("prist")
         .bin_name("prist")
         .show_download_progress(false)
         .show_output(false)
-        .current_version(env!("CARGO_PKG_VERSION"))
+        .no_confirm(true)
+        .current_version(current)
         .build()
         .map_err(|e| PristError::msg(format!("self_update config: {e}")))?;
 
-    let check_elapsed = start.elapsed().as_secs_f32();
-    println!("{} Checked for updates {}", "✓".green().bold(), format!("({:.1?}s)", check_elapsed).dimmed());
-
-    let update_start = std::time::Instant::now();
     let status = updater
         .update()
         .map_err(|e| PristError::msg(format!("self_update: {e}")))?;
 
-    let update_elapsed = update_start.elapsed().as_secs_f32();
+    let elapsed = start.elapsed().as_secs_f32();
     if status.updated() {
-        println!("{} Updated successfully {}", "✓".green().bold(), format!("({:.1?}s)", update_elapsed).dimmed());
+        println!(
+            "{} Updated {} → {} {}",
+            "✓".green().bold(),
+            format!("v{current}").dimmed(),
+            format!("v{}", status.version()).green().bold(),
+            format!("({elapsed:.1}s)").dimmed()
+        );
     } else {
-        println!("{} Up to date (v{})", "✓".green().bold(), env!("CARGO_PKG_VERSION"));
+        println!(
+            "{} Already up to date {}",
+            "✓".green().bold(),
+            format!("(v{current})").dimmed()
+        );
     }
-    let _ = bin;
     Ok(())
 }
 

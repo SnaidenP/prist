@@ -1,6 +1,6 @@
 [package]
 name = "prist"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Fredery Peña <fredd85565@gmail.com>"]
@@ -54,7 +54,7 @@ hex = "0.4"
 tempfile = "3"
 
 # Self update (Phase 4)
-self_update = { version = "0.42", features = ["archive-tar", "compression-flate2"] }
+self_update = { version = "0.42", features = ["archive-tar", "archive-zip", "compression-flate2"] }
 
 # Platform links
 [target.'cfg(windows)'.dependencies]
