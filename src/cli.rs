@@ -51,8 +51,8 @@ pub enum Command {
 
     /// Activate an environment in the current project (or globally with -g).
     Use {
-        /// Name of the environment to activate.
-        env: String,
+        /// Name of the environment to activate. Optional if activating current project's pinned env.
+        env: Option<String>,
         /// Set the environment as the global default instead of project-local.
         #[arg(short = 'g', long)]
         global: bool,

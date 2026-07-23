@@ -62,8 +62,18 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
     let env_path_str = env_path.to_string_lossy().replace('\\', "/");
     root.insert(
         "dart.flutterSdkPath".to_string(),
-        Value::String(env_path_str),
+        Value::String(env_path_str.clone()),
     );
+    root.insert(
+        "dart.flutterSdkPaths".to_string(),
+        Value::Array(vec![Value::String(env_path_str.clone())]),
+    );
+
+    let dart_sdk = env_path.join("bin").join("cache").join("dart-sdk");
+    if dart_sdk.exists() {
+        let dart_sdk_str = dart_sdk.to_string_lossy().replace('\\', "/");
+        root.insert("dart.sdkPath".to_string(), Value::String(dart_sdk_str));
+    }
 
     // Exclude Prist's home from file watcher + search to avoid reindexing.
     let home = home_for_exclusion(env_path);
@@ -97,6 +107,8 @@ fn vscode_revert(project_root: &Path) -> anyhow::Result<()> {
         .cloned()
         .unwrap_or_default();
     root.remove("dart.flutterSdkPath");
+    root.remove("dart.flutterSdkPaths");
+    root.remove("dart.sdkPath");
     if root.is_empty() {
         let _ = std::fs::remove_file(&settings);
     } else {

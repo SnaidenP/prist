@@ -141,39 +141,61 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
     Ok(())
 }
 
-/// `prist use <env> [--global]`
-fn use_env(home: &PristHome, env: String, global: bool) -> Result<()> {
-    let env_path = home.env(&env);
+/// `prist use [env] [--global]`
+fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
+    let target_env = match env {
+        Some(e) => e,
+        None => {
+            // Auto-detect environment: check project config .pristrc first, then global config.
+            let (active, _source) = config::resolve_active(home)?;
+            match active {
+                Some(e) => e,
+                None => {
+                    return Err(PristError::msg(
+                        "no environment specified and no active environment found.\nUsage: `prist use <env>` or run `prist ls` to see available environments.",
+                    ).into());
+                }
+            }
+        }
+    };
+
+    let env_path = home.env(&target_env);
     if !env_path.is_dir() {
-        return Err(PristError::EnvNotFound(env).into());
+        return Err(PristError::EnvNotFound(target_env).into());
+    }
+
+    // Ensure engine and Dart SDK cache are pre-populated so IDEs recognize the SDK immediately.
+    let engine_hash = git_ops::read_engine_version(&env_path);
+    if let Some(hash) = &engine_hash {
+        if let Err(e) = engine::ensure_engine(home, &env_path, hash) {
+            tracing::warn!(error = %e, "engine auto-population on use failed");
+        }
     }
 
     if global {
         let mut cfg = GlobalConfig::load(home)?;
-        cfg.default_env = Some(env.clone());
+        cfg.default_env = Some(target_env.clone());
         cfg.save(home)?;
         // Update the `envs/default` junction/symlink to this env.
         let _ = fs_unlink(&home.default_env_link());
         crate::fs_util::make_dir_link(&home.default_env_link(), &env_path)?;
 
-        // Create/update shim scripts in the prist bin directory (already on
-        // PATH from the installer) so `flutter`, `dart`, and `pub` work
-        // directly from any terminal without modifying the system PATH.
+        // Create/update shim scripts in the prist bin directory.
         install_shims(home);
 
-        println!("→ set '{env}' as the global default");
+        println!("→ set '{target_env}' as the global default");
         println!("  `flutter` and `dart` are now available in any terminal");
     } else {
         let rc = Path::new(crate::paths::PROJECT_CONFIG_NAME);
         let cfg = ProjectConfig {
-            env: Some(env.clone()),
+            env: Some(target_env.clone()),
             flutter: EnvMeta::load(&env_path)
                 .ok()
                 .flatten()
                 .and_then(|m| m.version.or(m.channel).or(m.commit)),
         };
         cfg.save(rc)?;
-        println!("→ project pinned to {env}");
+        println!("→ project pinned to {target_env}");
     }
 
     // Spec 4.5: `use` triggers IDE config mutation.
