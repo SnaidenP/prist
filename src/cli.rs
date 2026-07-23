@@ -66,8 +66,8 @@ pub enum Command {
 
     /// Remove a local environment (the shared bare repo is left untouched).
     Rm {
-        /// Name of the environment to remove.
-        env: String,
+        /// Name of the environment to remove. Optional for interactive selection.
+        env: Option<String>,
         /// Skip the confirmation prompt.
         #[arg(short = 'f', long)]
         force: bool,
