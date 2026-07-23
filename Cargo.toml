@@ -1,6 +1,6 @@
 [package]
 name = "prist"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Fredery Peña <fredd85565@gmail.com>"]
