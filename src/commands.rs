@@ -36,6 +36,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Doctor => doctor(&home)?,
         Command::Repair => repair(&home)?,
         Command::Update => update()?,
+        Command::Upgrade { env, reference } => upgrade(&home, env, reference).await?,
         Command::Completions { shell } => completions(shell)?,
         Command::Flutter(args) => proxy(&home, "flutter", &args)?,
         Command::Dart(args) => proxy(&home, "dart", &args)?,
@@ -517,6 +518,91 @@ fn completions(shell: clap_complete::Shell) -> Result<()> {
     Ok(())
 }
 
+/// `prist upgrade [env] [reference]`
+async fn upgrade(home: &PristHome, env: Option<String>, reference: Option<String>) -> Result<()> {
+    let start = std::time::Instant::now();
+    let target_env = match env {
+        Some(e) => e,
+        None => {
+            let (active, _source) = config::resolve_active(home)?;
+            match active {
+                Some(e) => e,
+                None => select_env_interactively(home, "? Select environment to upgrade:")?,
+            }
+        }
+    };
+
+    let env_path = home.env(&target_env);
+    if !env_path.is_dir() {
+        return Err(PristError::EnvNotFound(target_env).into());
+    }
+
+    let meta = EnvMeta::load(&env_path).ok().flatten();
+    let target_ref = match reference {
+        Some(r) => r,
+        None => meta
+            .as_ref()
+            .and_then(|m| m.reference.clone().or(m.channel.clone()))
+            .unwrap_or_else(|| "stable".to_string()),
+    };
+
+    let client = http_client();
+    let release = resolve_release(&client, &target_ref).await?;
+    let commit = release.commit_hash().map(|s| s.to_string());
+
+    let version_label = release
+        .version
+        .as_deref()
+        .unwrap_or_else(|| {
+            release
+                .channel
+                .as_deref()
+                .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
+        });
+
+    let _bare = git_ops::ensure_bare(&home.git_bare(), commit.as_deref())?;
+
+    let checkout_ref = commit.as_deref().unwrap_or(&target_ref);
+    let checkout_status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&env_path)
+        .args(["checkout", "-f", checkout_ref])
+        .status()
+        .map_err(|e| PristError::msg(format!("failed to checkout {checkout_ref}: {e}")))?;
+
+    if !checkout_status.success() {
+        return Err(PristError::msg(format!("git checkout {checkout_ref} failed")).into());
+    }
+
+    let engine_hash = git_ops::read_engine_version(&env_path);
+    if let Some(hash) = &engine_hash {
+        let _ = engine::ensure_engine(home, &env_path, hash);
+    }
+
+    let resolved_version = git_ops::read_flutter_version(&env_path).or(release.version.clone());
+
+    let new_meta = EnvMeta {
+        name: target_env.clone(),
+        reference: Some(target_ref),
+        channel: release.channel.clone(),
+        version: resolved_version,
+        commit: commit.clone(),
+        engine_hash: engine_hash.clone(),
+        created_at: meta.as_ref().and_then(|m| m.created_at.clone()).or_else(|| Some(now_iso())),
+    };
+    new_meta.save(&env_path)?;
+
+    let elapsed = start.elapsed().as_secs_f32();
+    println!(
+        "{} Upgraded '{}' to {} {}",
+        "✓".green().bold(),
+        target_env.bold(),
+        version_label,
+        format!("({:.1?}s)", elapsed).dimmed()
+    );
+    Ok(())
+}
+
 /// `prist flutter|dart|pub <args>` — transparent proxy (spec 3).
 fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
     let (env_name, _source) = config::resolve_active(home)?;
@@ -529,13 +615,41 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
             p
         }
         None => {
-            // Fall back to the `default` link target.
+            // Fall back to default link target first
             match crate::fs_util::read_dir_link(&home.default_env_link())? {
                 Some(p) if p.is_dir() => p,
                 _ => {
-                    return Err(PristError::msg(
-                        "no active environment. Run `prist use <name>` or `prist create <name> <version>`.",
-                    ).into());
+                    let mut envs = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(home.envs()) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name != "default" && entry.path().is_dir() {
+                                envs.push(name);
+                            }
+                        }
+                    }
+
+                    if envs.is_empty() {
+                        return Err(PristError::msg(
+                            "No environments installed. Run `prist create <name> <version>`.",
+                        )
+                        .into());
+                    }
+
+                    if envs.len() == 1 {
+                        let target = &envs[0];
+                        let _ = use_env(home, Some(target.clone()), true);
+                        home.env(target)
+                    } else if std::io::stdout().is_terminal() {
+                        let selected = select_env_interactively(home, "? No active environment. Select one to activate:")?;
+                        let _ = use_env(home, Some(selected.clone()), true);
+                        home.env(&selected)
+                    } else {
+                        return Err(PristError::msg(
+                            "no active environment. Run `prist use <name>`.",
+                        )
+                        .into());
+                    }
                 }
             }
         }

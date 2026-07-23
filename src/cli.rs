@@ -85,6 +85,14 @@ pub enum Command {
     /// Self-update the `prist` binary from GitHub releases.
     Update,
 
+    /// Upgrade an existing environment to the latest version or a specific reference.
+    Upgrade {
+        /// Environment to upgrade. Optional if an environment is active.
+        env: Option<String>,
+        /// Target Flutter version / channel / commit. Optional.
+        reference: Option<String>,
+    },
+
     /// Print shell completion script for the given shell.
     Completions {
         /// Shell to generate completions for.
