@@ -713,8 +713,33 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
     cmd.env("FLUTTER_ROOT", &env_path);
     cmd.env("FLUTTER_GIT_URL", crate::git_ops::FLUTTER_REPO_URL);
     // Prepend the env's bin/ (and dart-sdk bin/) to PATH so proxied tools find dart.
+    // Also remove the prist shim bin directory from PATH so Flutter doesn't see
+    // our shim scripts and warn that `flutter`/`dart` on PATH aren't inside the
+    // SDK checkout.
     let path = std::env::var("PATH").unwrap_or_default();
     let path_sep = if cfg!(windows) { ";" } else { ":" };
+    let prist_bin = home.root().join(BIN_DIR);
+    let filtered_path: String = path
+        .split(path_sep)
+        .filter(|entry| {
+            let entry_path = Path::new(entry);
+            // Compare canonicalized paths when possible, fall back to
+            // case-insensitive comparison on Windows.
+            if let (Ok(a), Ok(b)) = (entry_path.canonicalize(), prist_bin.canonicalize()) {
+                a != b
+            } else {
+                #[cfg(windows)]
+                {
+                    !entry.eq_ignore_ascii_case(&prist_bin.to_string_lossy())
+                }
+                #[cfg(not(windows))]
+                {
+                    entry_path != prist_bin
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(path_sep);
     let new_path = format!(
         "{}{}{}{}{}",
         env_path.join(BIN_DIR).display(),
@@ -726,7 +751,7 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
             .join(BIN_DIR)
             .display(),
         path_sep,
-        path
+        filtered_path
     );
     cmd.env("PATH", new_path);
     cmd.env("FLUTTER_ALREADY_WAITED", "true");
