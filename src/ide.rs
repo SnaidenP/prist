@@ -37,13 +37,53 @@ pub fn revert(project_root: &Path) -> anyhow::Result<()> {
 
 fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
     let dir = project_root.join(".vscode");
-    std::fs::create_dir_all(&dir)?;
     let settings = dir.join("settings.json");
+    let _ = update_vscode_settings_file(&settings, env_path);
 
-    let mut root: Map<String, Value> = match std::fs::read_to_string(&settings) {
+    // Exclude Prist's home from file watcher + search to avoid reindexing.
+    let home = home_for_exclusion(env_path);
+    let exclude = || {
+        Value::Object({
+            let mut m = Map::new();
+            m.insert(home.clone(), Value::Bool(true));
+            m
+        })
+    };
+
+    if let Ok(contents) = std::fs::read_to_string(&settings) {
+        if let Ok(parsed) = jsonc_parser::parse_to_serde_value(&contents, &jsonc_parser::ParseOptions::default()) {
+            if let Some(mut root) = parsed.as_ref().and_then(|v| v.as_object()).cloned() {
+                root.entry("files.watcherExclude".to_string()).or_insert(exclude());
+                root.entry("search.exclude".to_string()).or_insert(exclude());
+                if let Ok(json) = serde_json::to_string_pretty(&Value::Object(root)) {
+                    let _ = fs_util::atomic_write_str(&settings, &format!("{json}\n"));
+                }
+            }
+        }
+    }
+
+    // Update global user settings for Antigravity IDE, VS Code, Cursor, Windsurf, VSCodium
+    if let Some(appdata) = std::env::var_os("APPDATA").map(std::path::PathBuf::from) {
+        let ide_names = ["Antigravity IDE", "Code", "Cursor", "Windsurf", "VSCodium", "Code - Insiders"];
+        for ide in &ide_names {
+            let user_dir = appdata.join(ide).join("User");
+            if user_dir.is_dir() {
+                let user_settings = user_dir.join("settings.json");
+                let _ = update_vscode_settings_file(&user_settings, env_path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn update_vscode_settings_file(settings: &Path, env_path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = settings.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut root: Map<String, Value> = match std::fs::read_to_string(settings) {
         Ok(contents) if !contents.trim().is_empty() => {
-            // JSONC-tolerant parse (comments preserved-as-ignored) so we never
-            // corrupt a user's commented settings file.
             let parsed = jsonc_parser::parse_to_serde_value(
                 &contents,
                 &jsonc_parser::ParseOptions::default(),
@@ -58,16 +98,21 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
         _ => Map::new(),
     };
 
-    // dart.flutterSdkPath → the active env's path (forward slashes for cross-platform IDE compatibility).
     let env_path_str = env_path.to_string_lossy().replace('\\', "/");
     root.insert(
         "dart.flutterSdkPath".to_string(),
         Value::String(env_path_str.clone()),
     );
-    root.insert(
-        "dart.flutterSdkPaths".to_string(),
-        Value::Array(vec![Value::String(env_path_str.clone())]),
-    );
+
+    let mut sdk_paths = vec![Value::String(env_path_str.clone())];
+    if let Some(existing_paths) = root.get("dart.flutterSdkPaths").and_then(|v| v.as_array()) {
+        for p in existing_paths {
+            if p.as_str() != Some(&env_path_str) {
+                sdk_paths.push(p.clone());
+            }
+        }
+    }
+    root.insert("dart.flutterSdkPaths".to_string(), Value::Array(sdk_paths));
 
     let dart_sdk = env_path.join("bin").join("cache").join("dart-sdk");
     if dart_sdk.exists() {
@@ -75,20 +120,8 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
         root.insert("dart.sdkPath".to_string(), Value::String(dart_sdk_str));
     }
 
-    // Exclude Prist's home from file watcher + search to avoid reindexing.
-    let home = home_for_exclusion(env_path);
-    let exclude = || {
-        Value::Object({
-            let mut m = Map::new();
-            m.insert(home.clone(), Value::Bool(true));
-            m
-        })
-    };
-    root.entry("files.watcherExclude").or_insert(exclude());
-    root.entry("search.exclude").or_insert(exclude());
-
     let json = serde_json::to_string_pretty(&Value::Object(root))?;
-    fs_util::atomic_write_str(&settings, &format!("{json}\n"))?;
+    fs_util::atomic_write_str(settings, &format!("{json}\n"))?;
     Ok(())
 }
 
