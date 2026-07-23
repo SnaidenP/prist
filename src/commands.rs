@@ -122,6 +122,13 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
     };
     meta.save(&env_path)?;
 
+    // If no global default environment is active, automatically activate this new environment as global default.
+    let global_cfg = GlobalConfig::load(home).ok();
+    let has_global_default = global_cfg.as_ref().and_then(|c| c.default_env.as_ref()).is_some();
+    if !has_global_default {
+        let _ = use_env(home, Some(name.clone()), true);
+    }
+
     let elapsed = start.elapsed().as_secs_f32();
     println!("{} Created '{}' ({}) {}", "✓".green().bold(), name.bold(), version_label, format!("({:.1?}s)", elapsed).dimmed());
     Ok(())
