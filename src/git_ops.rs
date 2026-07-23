@@ -198,7 +198,6 @@ pub fn create_env_from_bare(
         )));
     }
 
-    // Detach HEAD to the target commit / tag.
     if let Some(c) = commit {
         let mut checkout = std::process::Command::new("git")
             .arg("-c")
@@ -237,11 +236,38 @@ pub fn create_env_from_bare(
     }
 
     write_alternates(env_path, &bare_path.join("objects"))?;
+
+    // Fix remote origin and branch tracking for flutter doctor compatibility
     let _ = std::process::Command::new("git")
         .arg("-C")
         .arg(env_path)
         .args(["remote", "set-url", "origin", FLUTTER_REPO_URL])
         .output();
+
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env_path)
+        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .output();
+
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env_path)
+        .args(["update-ref", "refs/remotes/origin/stable", "HEAD"])
+        .output();
+
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env_path)
+        .args(["checkout", "-B", "stable"])
+        .output();
+
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(env_path)
+        .args(["branch", "--set-upstream-to", "origin/stable"])
+        .output();
+
     Ok(env_path.to_path_buf())
 }
 

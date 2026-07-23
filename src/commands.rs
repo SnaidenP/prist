@@ -479,6 +479,30 @@ fn repair(home: &PristHome) -> Result<()> {
             .arg(&env_path)
             .args(["remote", "set-url", "origin", git_ops::FLUTTER_REPO_URL])
             .output();
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env_path)
+            .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+            .output();
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env_path)
+            .args(["update-ref", "refs/remotes/origin/stable", "HEAD"])
+            .output();
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env_path)
+            .args(["checkout", "-B", "stable"])
+            .output();
+
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env_path)
+            .args(["branch", "--set-upstream-to", "origin/stable"])
+            .output();
     }
     let elapsed = start.elapsed().as_secs_f32();
     println!("{} Repaired environments {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
