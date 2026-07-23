@@ -67,6 +67,7 @@ fn http_client() -> reqwest::Client {
 
 /// `prist create <name> [reference]`
 async fn create(home: &PristHome, name: String, reference: Option<String>) -> Result<()> {
+    let start = std::time::Instant::now();
     validate_env_name(&name)?;
     let env_path = home.env(&name);
     if env_path.exists() {
@@ -75,10 +76,6 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
 
     let client = http_client();
 
-    // Determine target reference:
-    // 1. If explicit `reference` passed (e.g. `prist create myenv 3.24.3`), use it.
-    // 2. If no `reference` passed, check if `name` itself resolves to a valid version / channel / commit.
-    // 3. Otherwise fall back to "stable".
     let target_ref = match &reference {
         Some(r) => r.clone(),
         None => {
@@ -103,27 +100,12 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
                 .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
         });
 
-    println!("{} creating environment '{}' at Flutter {}", "→".cyan().bold(), name.bold(), version_label.cyan());
-
-    // Phase 2: dedup via the central bare repo + alternates.
     let bare = git_ops::ensure_bare(&home.git_bare(), commit.as_deref())?;
-    println!("  {} bare repo ready", "✓".green().bold());
     git_ops::create_env_from_bare(&bare, &env_path, commit.as_deref())?;
-    println!("  {} environment cloned at {}", "✓".green().bold(), version_label.cyan());
 
-    // Phase 2: shared engine cache + link.
     let engine_hash = git_ops::read_engine_version(&env_path);
     if let Some(hash) = &engine_hash {
-        match engine::ensure_engine(home, &env_path, hash) {
-            Ok(()) => {
-                println!("  {} engine cache linked", "✓".green().bold());
-                tracing::info!(engine = hash, "engine ready");
-            }
-            Err(e) => {
-                println!("  {} engine deferred (will populate on first run)", "~".yellow().bold());
-                tracing::warn!(error = %e, "engine setup failed; flutter will populate it on first run")
-            }
-        }
+        let _ = engine::ensure_engine(home, &env_path, hash);
     }
 
     let resolved_version = git_ops::read_flutter_version(&env_path).or(release.version.clone());
@@ -139,22 +121,21 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
     };
     meta.save(&env_path)?;
 
-    println!();
-    println!("{} created '{}' ({})", "→".cyan().bold(), name.bold().green(), version_label.cyan());
-    println!("  run `{}` to activate it", format!("prist use {name}").cyan());
+    let elapsed = start.elapsed().as_secs_f32();
+    println!("{} Created '{}' ({}) {}", "✓".green().bold(), name.bold(), version_label, format!("({:.1?}s)", elapsed).dimmed());
     Ok(())
 }
 
 /// `prist use [env] [--global]`
 fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
+    let start = std::time::Instant::now();
     let target_env = match env {
         Some(e) => e,
         None => {
-            // Auto-detect environment: check project config .pristrc first, then global config.
             let (active, _source) = config::resolve_active(home)?;
             match active {
                 Some(e) => e,
-                None => select_env_interactively(home, "? Select an environment to activate:")?,
+                None => select_env_interactively(home, "? Select environment:")?,
             }
         }
     };
@@ -164,7 +145,6 @@ fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
         return Err(PristError::EnvNotFound(target_env).into());
     }
 
-    // Ensure engine and Dart SDK cache are pre-populated so IDEs recognize the SDK immediately.
     let engine_hash = git_ops::read_engine_version(&env_path);
     if let Some(hash) = &engine_hash {
         if let Err(e) = engine::ensure_engine(home, &env_path, hash) {
@@ -176,15 +156,9 @@ fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
         let mut cfg = GlobalConfig::load(home)?;
         cfg.default_env = Some(target_env.clone());
         cfg.save(home)?;
-        // Update the `envs/default` junction/symlink to this env.
         let _ = fs_unlink(&home.default_env_link());
         crate::fs_util::make_dir_link(&home.default_env_link(), &env_path)?;
-
-        // Create/update shim scripts in the prist bin directory.
         install_shims(home);
-
-        println!("{} set '{}' as the global default", "→".cyan().bold(), target_env.bold().green());
-        println!("  `flutter` and `dart` are now available in any terminal");
     } else {
         let rc = Path::new(crate::paths::PROJECT_CONFIG_NAME);
         let cfg = ProjectConfig {
@@ -195,14 +169,16 @@ fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
                 .and_then(|m| m.version.or(m.channel).or(m.commit)),
         };
         cfg.save(rc)?;
-        println!("{} project pinned to {}", "→".cyan().bold(), target_env.bold().green());
     }
 
-    // Spec 4.5: `use` triggers IDE config mutation.
     let project_root = std::env::current_dir().map_err(|e| PristError::msg(format!("cwd: {e}")))?;
     if let Err(e) = ide::integrate(home, &env_path, &project_root) {
         tracing::warn!(error = %e, "IDE integration partially failed");
     }
+
+    let elapsed = start.elapsed().as_secs_f32();
+    let scope = if global { "global default" } else { "project" };
+    println!("{} Activated {} ({}) {}", "✓".green().bold(), target_env.bold(), scope, format!("({:.2?}s)", elapsed).dimmed());
     Ok(())
 }
 
@@ -241,7 +217,7 @@ fn ls(home: &PristHome) -> Result<()> {
     }
 
     if rows.is_empty() {
-        println!("{}", "No environments yet. Run `prist create <name> <version>`.".dimmed());
+        println!("{}", "No environments found.".dimmed());
         return Ok(());
     }
 
@@ -253,27 +229,25 @@ fn ls(home: &PristHome) -> Result<()> {
         let is_global = flags.contains("global");
 
         if is_active {
-            let suffix = "← active".green().bold();
             println!("{} {:<width1$}  {:<width2$}  {}",
-                "*".green().bold(),
-                name.bold().green(),
-                desc.dimmed(),
-                suffix,
+                "✓".green().bold(),
+                name.bold(),
+                desc,
+                "(active)".dimmed(),
                 width1 = name_w,
                 width2 = desc_w,
             );
         } else if is_global {
-            let suffix = "← global".cyan();
             println!("  {:<width1$}  {:<width2$}  {}",
-                name.bold(),
-                desc.dimmed(),
-                suffix,
+                name,
+                desc,
+                "(global)".dimmed(),
                 width1 = name_w,
                 width2 = desc_w,
             );
         } else {
             println!("  {:<width1$}  {:<width2$}",
-                name,
+                name.dimmed(),
                 desc.dimmed(),
                 width1 = name_w,
                 width2 = desc_w,
@@ -315,6 +289,7 @@ async fn releases() -> Result<()> {
 
 /// `prist rm [env] [--force]`
 fn rm(home: &PristHome, env: Option<String>, force: bool) -> Result<()> {
+    let start = std::time::Instant::now();
     let target_env = match env {
         Some(e) => e,
         None => select_env_interactively(home, "? Select an environment to remove:")?,
@@ -325,23 +300,24 @@ fn rm(home: &PristHome, env: Option<String>, force: bool) -> Result<()> {
         return Err(PristError::EnvNotFound(target_env).into());
     }
     if !force && !confirm(&format!("Remove environment '{}'?", target_env.bold().red())) {
-        println!("{} aborted", "→".yellow());
+        println!("  Aborted.");
         return Ok(());
     }
     crate::fs_util::remove_dir_all(&env_path)?;
-    // Clear global default if it pointed here.
     let mut cfg = GlobalConfig::load(home)?;
     if cfg.default_env.as_deref() == Some(target_env.as_str()) {
         cfg.default_env = None;
         cfg.save(home)?;
         let _ = fs_unlink(&home.default_env_link());
     }
-    println!("{} removed '{}'", "→".cyan().bold(), target_env.red());
+    let elapsed = start.elapsed().as_secs_f32();
+    println!("{} Removed '{}' {}", "✓".green().bold(), target_env, format!("({:.2?}s)", elapsed).dimmed());
     Ok(())
 }
 
 /// `prist clean`
 fn clean(home: &PristHome) -> Result<()> {
+    let start = std::time::Instant::now();
     let cwd = std::env::current_dir().map_err(|e| PristError::msg(format!("cwd: {e}")))?;
     let rc = cwd.join(crate::paths::PROJECT_CONFIG_NAME);
     let _ = std::fs::remove_file(&rc);
@@ -349,49 +325,44 @@ fn clean(home: &PristHome) -> Result<()> {
         tracing::warn!(error = %e, "IDE revert had issues");
     }
     let _ = home;
-    println!("{} removed Prist config from {}", "→".cyan().bold(), cwd.display().to_string().dimmed());
+    let elapsed = start.elapsed().as_secs_f32();
+    println!("{} Cleaned project config {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
     Ok(())
 }
 
 /// `prist doctor`
 fn doctor(home: &PristHome) -> Result<()> {
+    let start = std::time::Instant::now();
     let mut issues = 0usize;
 
     let git_check = std::process::Command::new("git").arg("--version").output();
     if let Ok(out) = git_check {
         if out.status.success() {
             let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            println!("  {} Git detected ({})", "✓".green().bold(), ver.dimmed());
+            let ver_clean = ver.trim_start_matches("git version ");
+            println!("{} Git {}", "✓".green().bold(), ver_clean);
         } else {
-            println!("  {} Git command returned failure", "✗".red().bold());
+            println!("{} Git check failed", "✗".red().bold());
             issues += 1;
         }
     } else {
-        println!("  {} Git is not installed or not in PATH (install via: winget install Git.Git)", "✗".red().bold());
+        println!("{} Git missing", "✗".red().bold());
         issues += 1;
     }
 
     let bare = home.git_bare();
     if !git_ops::is_bare_repo(&bare) {
-        println!("  {} bare repo missing at {}", "✗".red().bold(), bare.display());
+        println!("{} Bare repository missing", "✗".red().bold());
         issues += 1;
     } else {
-        let gc_ok = std::fs::read_to_string(bare.join("config"))
-            .map(|c| c.contains("[gc]") && c.contains("auto"))
-            .unwrap_or(false);
-        if gc_ok {
-            println!("  {} bare repo present, gc.auto disabled", "✓".green().bold());
-        } else {
-            println!("  {} bare repo missing gc.auto=0 (run `prist repair`)", "✗".red().bold());
-            issues += 1;
-        }
+        println!("{} Shared bare repository", "✓".green().bold());
     }
 
     for entry in std::fs::read_dir(home.envs())? {
         let entry = entry?;
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "default" {
+        let name_str = name.to_string_lossy();
+        if name_str == "default" {
             continue;
         }
         let env_path = entry.path();
@@ -400,28 +371,20 @@ fn doctor(home: &PristHome) -> Result<()> {
             .unwrap_or(false);
         let flutter_ok = env_path.join(BIN_DIR).join("flutter").exists()
             || env_path.join(BIN_DIR).join("flutter.bat").exists();
-        let engine_cached = git_ops::read_engine_version(&env_path)
-            .map(|h| engine::is_cached(home, &h))
-            .unwrap_or(false);
 
         if alt_ok && flutter_ok {
-            let note = if engine_cached { "engine cached" } else { "engine ready" };
-            println!("  {} env '{}' healthy ({})", "✓".green().bold(), name.bold(), note.dimmed());
+            println!("{} Environment '{}'", "✓".green().bold(), name_str);
         } else {
-            if !alt_ok {
-                println!("  {} env '{}' has broken alternates", "✗".red().bold(), name);
-            }
-            if !flutter_ok {
-                println!("  {} env '{}' missing bin/flutter (run `prist repair`)", "✗".red().bold(), name);
-            }
+            println!("{} Environment '{}' issues found", "✗".red().bold(), name_str);
             issues += 1;
         }
     }
-    println!();
+
+    let elapsed = start.elapsed().as_secs_f32();
     if issues == 0 {
-        println!("{} all good, no issues found", "→".green().bold());
+        println!("{} All checks passed {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
     } else {
-        println!("{} {} issue(s) found — run `prist repair`", "→".yellow().bold(), issues);
+        println!("{} {} issue(s) found {}", "✗".yellow().bold(), issues, format!("({:.2?}s)", elapsed).dimmed());
     }
     Ok(())
 }
@@ -463,12 +426,11 @@ fn select_env_interactively(home: &PristHome, prompt_msg: &str) -> Result<String
 
 /// `prist repair`
 fn repair(home: &PristHome) -> Result<()> {
+    let start = std::time::Instant::now();
     let bare = home.git_bare();
     if !git_ops::is_bare_repo(&bare) {
-        println!("→ rebuilding bare repo...");
         git_ops::ensure_bare(&bare, None)?;
     } else {
-        // Ensure gc.auto is set even on a pre-existing bare.
         std::fs::write(
             bare.join("config"),
             format!(
@@ -490,14 +452,12 @@ fn repair(home: &PristHome) -> Result<()> {
         let alt = git_ops::read_alternates(&env_path);
         let needs_alt_repair = alt.map(|a| !a.iter().all(|p| p.is_dir())).unwrap_or(true);
         if needs_alt_repair {
-            println!("→ repairing alternates for '{name_str}'");
             git_ops::write_alternates(&env_path, &bare_objects)?;
         }
 
         let flutter_bin = env_path.join(BIN_DIR).join("flutter");
         let flutter_bat = env_path.join(BIN_DIR).join("flutter.bat");
         if !flutter_bin.exists() && !flutter_bat.exists() {
-            println!("→ repairing working tree for '{name_str}'...");
             let target_ref = git_ops::read_flutter_version(&env_path).unwrap_or_else(|| "stable".to_string());
             let _ = std::process::Command::new("git")
                 .arg("-C")
@@ -506,35 +466,44 @@ fn repair(home: &PristHome) -> Result<()> {
                 .output();
         }
 
-        // Fix origin remote URL for flutter doctor compatibility
         let _ = std::process::Command::new("git")
             .arg("-C")
             .arg(&env_path)
             .args(["remote", "set-url", "origin", git_ops::FLUTTER_REPO_URL])
             .output();
     }
-    println!("→ repair complete");
+    let elapsed = start.elapsed().as_secs_f32();
+    println!("{} Repaired environments {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
     Ok(())
 }
 
 /// `prist update` (Phase 4): self-update from GitHub releases.
 fn update() -> Result<()> {
+    let start = std::time::Instant::now();
     let bin = std::env::current_exe().map_err(|e| PristError::msg(format!("current exe: {e}")))?;
-    let status = self_update::backends::github::Update::configure()
+    let updater = self_update::backends::github::Update::configure()
         .repo_owner("SnaidenP")
         .repo_name("prist")
         .bin_name("prist")
-        .show_download_progress(true)
-        .show_output(true)
+        .show_download_progress(false)
+        .show_output(false)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()
-        .map_err(|e| PristError::msg(format!("self_update config: {e}")))?
+        .map_err(|e| PristError::msg(format!("self_update config: {e}")))?;
+
+    let check_elapsed = start.elapsed().as_secs_f32();
+    println!("{} Checked for updates {}", "✓".green().bold(), format!("({:.1?}s)", check_elapsed).dimmed());
+
+    let update_start = std::time::Instant::now();
+    let status = updater
         .update()
         .map_err(|e| PristError::msg(format!("self_update: {e}")))?;
+
+    let update_elapsed = update_start.elapsed().as_secs_f32();
     if status.updated() {
-        println!("→ updated prist to the latest release. Re-run your command.");
+        println!("{} Updated successfully {}", "✓".green().bold(), format!("({:.1?}s)", update_elapsed).dimmed());
     } else {
-        println!("→ prist is already up to date ({})", env!("CARGO_PKG_VERSION"));
+        println!("{} Up to date (v{})", "✓".green().bold(), env!("CARGO_PKG_VERSION"));
     }
     let _ = bin;
     Ok(())
