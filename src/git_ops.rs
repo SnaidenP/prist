@@ -99,7 +99,7 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
     if !is_bare_repo(bare_path) {
         clone_bare(bare_path)?;
     }
-    
+
     if let Some(c) = commit {
         let repo = gix::open(bare_path).ok();
         let has_obj = repo.as_ref().map(|r| has_object(r, c)).unwrap_or(false);
@@ -108,7 +108,12 @@ pub fn ensure_bare(bare_path: &Path, commit: Option<&str>) -> Result<PathBuf> {
             let _ = std::process::Command::new("git")
                 .arg("-C")
                 .arg(bare_path)
-                .args(["fetch", "origin", "+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*"])
+                .args([
+                    "fetch",
+                    "origin",
+                    "+refs/tags/*:refs/tags/*",
+                    "+refs/heads/*:refs/heads/*",
+                ])
                 .output();
             let _ = std::process::Command::new("git")
                 .arg("-C")
@@ -247,7 +252,11 @@ pub fn create_env_from_bare(
     let _ = std::process::Command::new("git")
         .arg("-C")
         .arg(env_path)
-        .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+        .args([
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
         .output();
 
     let _ = std::process::Command::new("git")

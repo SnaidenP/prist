@@ -27,7 +27,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let home = cli::resolve_home(&cli)?;
     home.ensure()?;
     match cli.command {
-        Command::Create { name, reference } => create(&home, name, reference).await?,
+        Command::Create {
+            name,
+            reference,
+            precache,
+        } => create(&home, name, reference, precache).await?,
         Command::Use { env, global } => use_env(&home, env, global)?,
         Command::Ls => ls(&home)?,
         Command::Releases => releases().await?,
@@ -67,7 +71,12 @@ fn http_client() -> reqwest::Client {
 }
 
 /// `prist create <name> [reference]`
-async fn create(home: &PristHome, name: String, reference: Option<String>) -> Result<()> {
+async fn create(
+    home: &PristHome,
+    name: String,
+    reference: Option<String>,
+    precache: bool,
+) -> Result<()> {
     let start = std::time::Instant::now();
     validate_env_name(&name)?;
     let env_path = home.env(&name);
@@ -91,22 +100,26 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
     let release = resolve_release(&client, &target_ref).await?;
     let commit = release.commit_hash().map(|s| s.to_string());
 
-    let version_label = release
-        .version
-        .as_deref()
-        .unwrap_or_else(|| {
-            release
-                .channel
-                .as_deref()
-                .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
-        });
+    let version_label = release.version.as_deref().unwrap_or_else(|| {
+        release
+            .channel
+            .as_deref()
+            .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
+    });
 
     let bare = git_ops::ensure_bare(&home.git_bare(), commit.as_deref())?;
     git_ops::create_env_from_bare(&bare, &env_path, commit.as_deref())?;
 
     let engine_hash = git_ops::read_engine_version(&env_path);
     if let Some(hash) = &engine_hash {
-        let _ = engine::ensure_engine(home, &env_path, hash);
+        if precache {
+            // Eagerly download engine + Dart SDK + platform artifacts.
+            let _ = engine::ensure_engine(home, &env_path, hash);
+        } else {
+            // Only link if the engine is already in the shared cache;
+            // otherwise defer the download to the first `prist flutter` call.
+            let _ = engine::try_link_engine(home, &env_path, hash);
+        }
     }
 
     let resolved_version = git_ops::read_flutter_version(&env_path).or(release.version.clone());
@@ -124,13 +137,22 @@ async fn create(home: &PristHome, name: String, reference: Option<String>) -> Re
 
     // If no global default environment is active, automatically activate this new environment as global default.
     let global_cfg = GlobalConfig::load(home).ok();
-    let has_global_default = global_cfg.as_ref().and_then(|c| c.default_env.as_ref()).is_some();
+    let has_global_default = global_cfg
+        .as_ref()
+        .and_then(|c| c.default_env.as_ref())
+        .is_some();
     if !has_global_default {
         let _ = use_env(home, Some(name.clone()), true);
     }
 
     let elapsed = start.elapsed().as_secs_f32();
-    println!("{} Created '{}' ({}) {}", "✓".green().bold(), name.bold(), version_label, format!("({:.1?}s)", elapsed).dimmed());
+    println!(
+        "{} Created '{}' ({}) {}",
+        "✓".green().bold(),
+        name.bold(),
+        version_label,
+        format!("({:.1?}s)", elapsed).dimmed()
+    );
     Ok(())
 }
 
@@ -155,8 +177,10 @@ fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
 
     let engine_hash = git_ops::read_engine_version(&env_path);
     if let Some(hash) = &engine_hash {
-        if let Err(e) = engine::ensure_engine(home, &env_path, hash) {
-            tracing::warn!(error = %e, "engine auto-population on use failed");
+        // Only link the engine if already cached; don't force a download
+        // just because the user switched environments.
+        if let Err(e) = engine::try_link_engine(home, &env_path, hash) {
+            tracing::warn!(error = %e, "engine link on use failed");
         }
     }
 
@@ -186,7 +210,13 @@ fn use_env(home: &PristHome, env: Option<String>, global: bool) -> Result<()> {
 
     let elapsed = start.elapsed().as_secs_f32();
     let scope = if global { "global default" } else { "project" };
-    println!("{} Activated {} ({}) {}", "✓".green().bold(), target_env.bold(), scope, format!("({:.2?}s)", elapsed).dimmed());
+    println!(
+        "{} Activated {} ({}) {}",
+        "✓".green().bold(),
+        target_env.bold(),
+        scope,
+        format!("({:.2?}s)", elapsed).dimmed()
+    );
     Ok(())
 }
 
@@ -237,7 +267,8 @@ fn ls(home: &PristHome) -> Result<()> {
         let is_global = flags.contains("global");
 
         if is_active {
-            println!("{} {:<width1$}  {:<width2$}  {}",
+            println!(
+                "{} {:<width1$}  {:<width2$}  {}",
                 "✓".green().bold(),
                 name.bold(),
                 desc,
@@ -246,7 +277,8 @@ fn ls(home: &PristHome) -> Result<()> {
                 width2 = desc_w,
             );
         } else if is_global {
-            println!("  {:<width1$}  {:<width2$}  {}",
+            println!(
+                "  {:<width1$}  {:<width2$}  {}",
                 name,
                 desc,
                 "(global)".dimmed(),
@@ -254,7 +286,8 @@ fn ls(home: &PristHome) -> Result<()> {
                 width2 = desc_w,
             );
         } else {
-            println!("  {:<width1$}  {:<width2$}",
+            println!(
+                "  {:<width1$}  {:<width2$}",
                 name.dimmed(),
                 desc.dimmed(),
                 width1 = name_w,
@@ -269,7 +302,13 @@ fn ls(home: &PristHome) -> Result<()> {
 async fn releases() -> Result<()> {
     let client = http_client();
     let feed = ReleaseFeed::fetch(&client, Platform::host()).await?;
-    println!("  {:<10} {:<16} {:<10} {}", "CHANNEL".bold(), "VERSION".bold(), "DATE".bold(), "COMMIT".bold());
+    println!(
+        "  {:<10} {:<16} {:<10} {}",
+        "CHANNEL".bold(),
+        "VERSION".bold(),
+        "DATE".bold(),
+        "COMMIT".bold()
+    );
     println!("  {:-<10}  {:-<16}  {:-<10}  {:-<7}", "", "", "", "");
     for r in feed.releases.iter().take(50) {
         let ch = r.channel.as_deref().unwrap_or("-");
@@ -307,7 +346,12 @@ fn rm(home: &PristHome, env: Option<String>, force: bool) -> Result<()> {
     if !env_path.is_dir() {
         return Err(PristError::EnvNotFound(target_env).into());
     }
-    if !force && !confirm(&format!("Remove environment '{}'?", target_env.bold().red())) {
+    if !force
+        && !confirm(&format!(
+            "Remove environment '{}'?",
+            target_env.bold().red()
+        ))
+    {
         println!("  Aborted.");
         return Ok(());
     }
@@ -319,7 +363,12 @@ fn rm(home: &PristHome, env: Option<String>, force: bool) -> Result<()> {
         let _ = fs_unlink(&home.default_env_link());
     }
     let elapsed = start.elapsed().as_secs_f32();
-    println!("{} Removed '{}' {}", "✓".green().bold(), target_env, format!("({:.2?}s)", elapsed).dimmed());
+    println!(
+        "{} Removed '{}' {}",
+        "✓".green().bold(),
+        target_env,
+        format!("({:.2?}s)", elapsed).dimmed()
+    );
     Ok(())
 }
 
@@ -334,7 +383,11 @@ fn clean(home: &PristHome) -> Result<()> {
     }
     let _ = home;
     let elapsed = start.elapsed().as_secs_f32();
-    println!("{} Cleaned project config {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
+    println!(
+        "{} Cleaned project config {}",
+        "✓".green().bold(),
+        format!("({:.2?}s)", elapsed).dimmed()
+    );
     Ok(())
 }
 
@@ -383,16 +436,29 @@ fn doctor(home: &PristHome) -> Result<()> {
         if alt_ok && flutter_ok {
             println!("{} Environment '{}'", "✓".green().bold(), name_str);
         } else {
-            println!("{} Environment '{}' issues found", "✗".red().bold(), name_str);
+            println!(
+                "{} Environment '{}' issues found",
+                "✗".red().bold(),
+                name_str
+            );
             issues += 1;
         }
     }
 
     let elapsed = start.elapsed().as_secs_f32();
     if issues == 0 {
-        println!("{} All checks passed {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
+        println!(
+            "{} All checks passed {}",
+            "✓".green().bold(),
+            format!("({:.2?}s)", elapsed).dimmed()
+        );
     } else {
-        println!("{} {} issue(s) found {}", "✗".yellow().bold(), issues, format!("({:.2?}s)", elapsed).dimmed());
+        println!(
+            "{} {} issue(s) found {}",
+            "✗".yellow().bold(),
+            issues,
+            format!("({:.2?}s)", elapsed).dimmed()
+        );
     }
     Ok(())
 }
@@ -411,7 +477,10 @@ fn select_env_interactively(home: &PristHome, prompt_msg: &str) -> Result<String
     }
 
     if envs.is_empty() {
-        return Err(PristError::msg("No environments installed yet. Run `prist create <name> <version>`.").into());
+        return Err(PristError::msg(
+            "No environments installed yet. Run `prist create <name> <version>`.",
+        )
+        .into());
     }
 
     let items: Vec<String> = envs
@@ -466,7 +535,8 @@ fn repair(home: &PristHome) -> Result<()> {
         let flutter_bin = env_path.join(BIN_DIR).join("flutter");
         let flutter_bat = env_path.join(BIN_DIR).join("flutter.bat");
         if !flutter_bin.exists() && !flutter_bat.exists() {
-            let target_ref = git_ops::read_flutter_version(&env_path).unwrap_or_else(|| "stable".to_string());
+            let target_ref =
+                git_ops::read_flutter_version(&env_path).unwrap_or_else(|| "stable".to_string());
             let _ = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&env_path)
@@ -483,7 +553,11 @@ fn repair(home: &PristHome) -> Result<()> {
         let _ = std::process::Command::new("git")
             .arg("-C")
             .arg(&env_path)
-            .args(["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+            .args([
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ])
             .output();
 
         let _ = std::process::Command::new("git")
@@ -505,7 +579,11 @@ fn repair(home: &PristHome) -> Result<()> {
             .output();
     }
     let elapsed = start.elapsed().as_secs_f32();
-    println!("{} Repaired environments {}", "✓".green().bold(), format!("({:.2?}s)", elapsed).dimmed());
+    println!(
+        "{} Repaired environments {}",
+        "✓".green().bold(),
+        format!("({:.2?}s)", elapsed).dimmed()
+    );
     Ok(())
 }
 
@@ -588,15 +666,12 @@ async fn upgrade(home: &PristHome, env: Option<String>, reference: Option<String
     let release = resolve_release(&client, &target_ref).await?;
     let commit = release.commit_hash().map(|s| s.to_string());
 
-    let version_label = release
-        .version
-        .as_deref()
-        .unwrap_or_else(|| {
-            release
-                .channel
-                .as_deref()
-                .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
-        });
+    let version_label = release.version.as_deref().unwrap_or_else(|| {
+        release
+            .channel
+            .as_deref()
+            .unwrap_or(commit.as_deref().unwrap_or("HEAD"))
+    });
 
     let _bare = git_ops::ensure_bare(&home.git_bare(), commit.as_deref())?;
 
@@ -626,7 +701,10 @@ async fn upgrade(home: &PristHome, env: Option<String>, reference: Option<String
         version: resolved_version,
         commit: commit.clone(),
         engine_hash: engine_hash.clone(),
-        created_at: meta.as_ref().and_then(|m| m.created_at.clone()).or_else(|| Some(now_iso())),
+        created_at: meta
+            .as_ref()
+            .and_then(|m| m.created_at.clone())
+            .or_else(|| Some(now_iso())),
     };
     new_meta.save(&env_path)?;
 
@@ -679,7 +757,10 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
                         let _ = use_env(home, Some(target.clone()), true);
                         home.env(target)
                     } else if std::io::stdout().is_terminal() {
-                        let selected = select_env_interactively(home, "? No active environment. Select one to activate:")?;
+                        let selected = select_env_interactively(
+                            home,
+                            "? No active environment. Select one to activate:",
+                        )?;
                         let _ = use_env(home, Some(selected.clone()), true);
                         home.env(&selected)
                     } else {
@@ -931,9 +1012,7 @@ fn install_shims(home: &PristHome) {
         ];
         for (file, tool) in shims {
             let path = bin_dir.join(file);
-            let content = format!(
-                "@echo off\r\nprist {tool} %*\r\n"
-            );
+            let content = format!("@echo off\r\nprist {tool} %*\r\n");
             let _ = std::fs::write(&path, content);
         }
     }

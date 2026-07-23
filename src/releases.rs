@@ -245,9 +245,16 @@ impl ReleaseFeed {
         if let Some(rel) = self.find_by_version(reference) {
             return Ok(rel.clone());
         }
-        let with_v = if reference.starts_with('v') { reference.to_string() } else { format!("v{reference}") };
+        let with_v = if reference.starts_with('v') {
+            reference.to_string()
+        } else {
+            format!("v{reference}")
+        };
         let without_v = reference.trim_start_matches('v');
-        if let Some(rel) = self.find_by_version(&with_v).or_else(|| self.find_by_version(without_v)) {
+        if let Some(rel) = self
+            .find_by_version(&with_v)
+            .or_else(|| self.find_by_version(without_v))
+        {
             return Ok(rel.clone());
         }
 

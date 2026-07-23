@@ -51,10 +51,14 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
     };
 
     if let Ok(contents) = std::fs::read_to_string(&settings) {
-        if let Ok(parsed) = jsonc_parser::parse_to_serde_value(&contents, &jsonc_parser::ParseOptions::default()) {
+        if let Ok(parsed) =
+            jsonc_parser::parse_to_serde_value(&contents, &jsonc_parser::ParseOptions::default())
+        {
             if let Some(mut root) = parsed.as_ref().and_then(|v| v.as_object()).cloned() {
-                root.entry("files.watcherExclude".to_string()).or_insert(exclude());
-                root.entry("search.exclude".to_string()).or_insert(exclude());
+                root.entry("files.watcherExclude".to_string())
+                    .or_insert(exclude());
+                root.entry("search.exclude".to_string())
+                    .or_insert(exclude());
                 if let Ok(json) = serde_json::to_string_pretty(&Value::Object(root)) {
                     let _ = fs_util::atomic_write_str(&settings, &format!("{json}\n"));
                 }
@@ -64,7 +68,14 @@ fn vscode(env_path: &Path, project_root: &Path) -> anyhow::Result<()> {
 
     // Update global user settings for Antigravity IDE, VS Code, Cursor, Windsurf, VSCodium
     if let Some(appdata) = std::env::var_os("APPDATA").map(std::path::PathBuf::from) {
-        let ide_names = ["Antigravity IDE", "Code", "Cursor", "Windsurf", "VSCodium", "Code - Insiders"];
+        let ide_names = [
+            "Antigravity IDE",
+            "Code",
+            "Cursor",
+            "Windsurf",
+            "VSCodium",
+            "Code - Insiders",
+        ];
         for ide in &ide_names {
             let user_dir = appdata.join(ide).join("User");
             if user_dir.is_dir() {

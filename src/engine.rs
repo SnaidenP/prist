@@ -63,6 +63,17 @@ pub fn link_engine_cache(home: &PristHome, env_path: &Path, hash: &str) -> Resul
     Ok(())
 }
 
+/// Try to link the engine cache if it already exists in the shared store.
+/// Does **not** download anything — returns `Ok(false)` when the engine is not
+/// yet cached so callers can decide whether to proceed.
+pub fn try_link_engine(home: &PristHome, env_path: &Path, hash: &str) -> Result<bool> {
+    if is_cached(home, hash) {
+        link_engine_cache(home, env_path, hash)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Ensure the engine for `hash` is in the shared store and linked into `env`.
 ///
 /// Strategy: let the environment's own `flutter` tool populate its `bin/cache/`
@@ -90,7 +101,11 @@ pub fn ensure_engine(home: &PristHome, env_path: &Path, hash: &str) -> Result<()
 /// Run `<env>/bin/flutter --version` and `<env>/bin/flutter precache` so the Flutter tool
 /// downloads its full engine, Dart SDK, and platform artifacts into `<env>/bin/cache/`.
 fn populate_via_flutter(env_path: &Path) -> Result<()> {
-    let flutter_name = if cfg!(windows) { "flutter.bat" } else { "flutter" };
+    let flutter_name = if cfg!(windows) {
+        "flutter.bat"
+    } else {
+        "flutter"
+    };
     let flutter = env_path.join("bin").join(flutter_name);
     let flutter_str = flutter
         .to_str()

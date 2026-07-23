@@ -47,6 +47,10 @@ pub enum Command {
         /// Flutter reference: a version (`3.0.1`), a channel (`stable`/`beta`/
         /// `dev`/`master`), or a 40-char commit hash. Defaults to `stable`.
         reference: Option<String>,
+        /// Download engine and platform artifacts immediately instead of
+        /// deferring to the first `flutter` invocation.
+        #[arg(long)]
+        precache: bool,
     },
 
     /// Activate an environment in the current project (or globally with -g).
