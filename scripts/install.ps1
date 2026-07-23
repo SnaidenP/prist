@@ -200,6 +200,15 @@ if ($userPath -split ';' -contains $InstallDir) {
     Write-Ok "Added $InstallDir to PATH (user-level)"
 }
 
+# Also inject into Git Bash .bashrc if present
+$bashrc = Join-Path $env:USERPROFILE ".bashrc"
+if (Test-Path $bashrc) {
+    $bashrcContent = Get-Content $bashrc -Raw -ErrorAction SilentlyContinue
+    if ($bashrcContent -notlike "*prist/bin*") {
+        Add-Content -Path $bashrc -Value "`nexport PATH=`"`$LOCALAPPDATA/prist/bin:`$PATH`"`n"
+    }
+}
+
 # ── 8. Verify ────────────────────────────────────────────────────────────────
 
 Write-Step "Verifying installation..."
