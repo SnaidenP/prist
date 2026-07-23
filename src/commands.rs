@@ -541,6 +541,13 @@ fn proxy(home: &PristHome, tool: &str, args: &ProxyArgs) -> Result<()> {
         }
     };
 
+    let engine_hash = git_ops::read_engine_version(&env_path);
+    if let Some(hash) = &engine_hash {
+        if let Err(e) = engine::ensure_engine(home, &env_path, hash) {
+            tracing::warn!(error = %e, "engine auto-population on proxy failed");
+        }
+    }
+
     let (program, extra_arg) = resolve_tool(&env_path, tool);
     if !program.exists() {
         return Err(PristError::msg(format!(
@@ -607,13 +614,37 @@ fn flutter_bin(env_path: &Path) -> PathBuf {
 fn flutter_bin(env_path: &Path) -> PathBuf {
     env_path.join(BIN_DIR).join("flutter.bat")
 }
-#[cfg(unix)]
+
 fn dart_bin(env_path: &Path) -> PathBuf {
-    env_path.join(BIN_DIR).join("dart")
-}
-#[cfg(windows)]
-fn dart_bin(env_path: &Path) -> PathBuf {
-    env_path.join(BIN_DIR).join("dart.exe")
+    let candidates = if cfg!(windows) {
+        vec![
+            env_path.join(BIN_DIR).join("dart.exe"),
+            env_path.join(BIN_DIR).join("dart.bat"),
+            env_path
+                .join(BIN_DIR)
+                .join("cache")
+                .join("dart-sdk")
+                .join(BIN_DIR)
+                .join("dart.exe"),
+        ]
+    } else {
+        vec![
+            env_path.join(BIN_DIR).join("dart"),
+            env_path
+                .join(BIN_DIR)
+                .join("cache")
+                .join("dart-sdk")
+                .join(BIN_DIR)
+                .join("dart"),
+        ]
+    };
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    candidates[0].clone()
 }
 
 // --- helpers ---------------------------------------------------------------
