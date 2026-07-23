@@ -8,11 +8,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: "1"
 
 jobs:
   check:
-    runs-on: windows-2022
+    name: Check on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +31,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ci-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ matrix.os }}-ci-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -38,8 +42,5 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Smoke test
-        run: |
-          ./target/release/prist.exe --version
-          ./target/release/prist.exe --help
-          ./target/release/prist.exe completions powershell | Out-Null
+      - name: Test
+        run: cargo test
